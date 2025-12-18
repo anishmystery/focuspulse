@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { OllamaClient } from "../services/llm/ollamaClient";
 import { HttpError } from "../utils/httpError";
+import { asyncHandler } from "../utils/asyncHandler";
 
 export const insightsRouter = Router();
 
@@ -19,14 +20,16 @@ type InsightResponseSchema = z.infer<typeof InsightResponseSchema>;
 
 const llm = new OllamaClient();
 
-insightsRouter.post("/insights/test", async (req, res) => {
-  const parsed = TestBody.safeParse(req.body);
-  if (!parsed.success) {
-    throw new HttpError(400, "Invalid request body", parsed.error.flatten());
-  }
+insightsRouter.post(
+  "/insights/test",
+  asyncHandler(async (req, res) => {
+    const parsed = TestBody.safeParse(req.body);
+    if (!parsed.success) {
+      throw new HttpError(400, "Invalid request body", parsed.error.flatten());
+    }
 
-  const { text } = parsed.data;
-  const prompt = `
+    const { text } = parsed.data;
+    const prompt = `
   You are FocusPulse, an assitant that produces concise productivity insights.
   
   Return ONLY valid JSON matching this schema:
@@ -44,17 +47,18 @@ insightsRouter.post("/insights/test", async (req, res) => {
   ${text}
   `.trim();
 
-  const json = await llm.generateJson<InsightResponseSchema>(prompt);
+    const json = await llm.generateJson<InsightResponseSchema>(prompt);
 
-  // Validate the LLM output so that the API stays stable
-  const validated = InsightResponseSchema.safeParse(json);
-  if (!validated.success) {
-    throw new HttpError(
-      502,
-      "LLM returned invalid JSON shape",
-      validated.error.flatten()
-    );
-  }
+    // Validate the LLM output so that the API stays stable
+    const validated = InsightResponseSchema.safeParse(json);
+    if (!validated.success) {
+      throw new HttpError(
+        502,
+        "LLM returned invalid JSON shape",
+        validated.error.flatten()
+      );
+    }
 
-  res.json({ ok: true, data: validated.data });
-});
+    res.json({ ok: true, data: validated.data });
+  })
+);
