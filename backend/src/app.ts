@@ -4,6 +4,7 @@ import { healthRouter } from "./routes/health";
 import { errorHandler } from "./middlewares/errorHandler";
 import { insightsRouter } from "./routes/insights";
 import { ingestRouter } from "./routes/ingest";
+import { normalizeRouter } from "./routes/normalize";
 
 export const app = express();
 
@@ -13,5 +14,6 @@ app.use(express.json());
 app.use(healthRouter);
 app.use(insightsRouter);
 app.use(ingestRouter);
+app.use(normalizeRouter);
 
 app.use(errorHandler);
