@@ -200,14 +200,15 @@ normalizeRouter.post(
     const dates = commits
       .map((c) => new Date(c.dateIso).getTime())
       .sort((a, b) => a - b);
-    const authors = new Set(commits.map((c) => c.authorName));
+    const authorsSet = new Set(commits.map((c) => c.authorName));
+    const authors = Array.from(authorsSet).sort((a, b) => a.localeCompare(b));
 
     res.json({
       ok: true,
       data: {
         stats: {
           commitCount: commits.length,
-          authorCount: authors.size,
+          authorCount: authors.length,
           dateRange: {
             from: new Date(dates[0]).toISOString(),
             to: new Date(dates[dates.length - 1]).toISOString(),
