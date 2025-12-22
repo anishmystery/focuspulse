@@ -213,6 +213,7 @@ normalizeRouter.post(
             to: new Date(dates[dates.length - 1]).toISOString(),
           },
         },
+        authors,
         commits,
         warnings,
       },
