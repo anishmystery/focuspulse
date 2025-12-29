@@ -5,7 +5,7 @@ import { errorHandler } from "./middlewares/errorHandler";
 import { insightsRouter } from "./routes/insights";
 import { ingestRouter } from "./routes/ingest";
 import { normalizeRouter } from "./routes/normalize";
-import { insightsV1Router } from "./routes/insightsv1";
+import { insightsV1Router } from "./routes/insightsV1";
 
 export const app = express();
 
