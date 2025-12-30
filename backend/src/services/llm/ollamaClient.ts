@@ -27,6 +27,7 @@ export class OllamaClient {
           stream: false,
           options: {
             temperature: 0.2,
+            num_predict: 300,
           },
         },
         { timeout: env.OLLAMA_TIMEOUT_MS }

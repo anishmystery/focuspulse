@@ -118,6 +118,14 @@ function computeInsights(
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3);
 
+  const times = commits
+    .map((c) => new Date(c.dateIso).getTime())
+    .sort((a, b) => a - b);
+  const dateRange = {
+    from: new Date(times[0]).toISOString(),
+    to: new Date(times[times.length - 1]).toISOString(),
+  };
+
   // --- Work type mix ---
   const typeCounts: Record<string, number> = {};
   const tagCounts: Record<string, number> = {};
@@ -197,8 +205,25 @@ function computeInsights(
     };
   }
 
+  const dataQuality =
+    dayKeys.length < 7 || total < 20
+      ? "low"
+      : dayKeys.length < 21 || total < 75
+      ? "medium"
+      : "high";
+
+  const dataNotes: string[] = [];
+  if (dataQuality === "low") {
+    dataNotes.push(
+      "Small sample size: treat insights as early signals, not strong conclusions."
+    );
+    dataNotes.push("Avoid claims about consistency, burnout, or trends.");
+  }
+
   return {
     focusAuthor,
+    dataQuality,
+    dataNotes,
     totals: { commits: total, activeDays: dayKeys.length },
     rhythm: {
       topDays,
@@ -212,19 +237,25 @@ function computeInsights(
       burstiness,
       spikeDays,
     },
+    dateRange,
     workTypeMix,
     messageQuality,
     teamContext,
   };
 }
 
-const LlmNarrativeSchema = z.object({
-  summary: z.string(),
-  highlights: z.array(z.string()).min(1),
-  recommendations: z.array(z.string()).min(1),
-  watchouts: z.array(z.string()).default([]),
-  confidence: z.number().min(0).max(1).optional(),
-});
+const LlmNarrativeSchema = z
+  .object({
+    summary: z.string(),
+    highlights: z.array(z.string()).min(1),
+    recommendations: z.array(z.string()).min(1),
+    watchouts: z.array(z.string()).default([]),
+    confidence: z.number().min(0).max(1).nullable().optional(),
+  })
+  .transform((val) => ({
+    ...val,
+    confidence: val.confidence ?? undefined,
+  }));
 
 const llm = new OllamaClient();
 
@@ -254,6 +285,64 @@ insightsV1Router.post(
 
     const computed = computeInsights(commits, focus!, uniqueAuthors);
 
+    const llmData = {
+      focusAuthor: computed.focusAuthor,
+      dataQuality: computed.dataQuality,
+      totals: computed.totals,
+      dateRange: computed.dateRange,
+      authorCount: uniqueAuthors.length,
+      rhythm: computed.rhythm,
+      consistency: computed.consistency,
+      workTypeMix: computed.workTypeMix.slice(0, 5),
+      messageQuality: {
+        conventionalPercent: computed.messageQuality.conventionalPercent,
+        ticketPercent: computed.messageQuality.ticketPercent,
+        tags: computed.messageQuality.tags.slice(0, 5),
+      },
+      teamContext: computed.teamContext ?? null,
+    };
+
+    const strictRules =
+      computed.dataQuality === "low"
+        ? `
+          Data quality is LOW.
+          Rules:
+          - You MUST include exactly 1 highlight saying more data is needed for strong conclusions.
+          - You MUST include at least 1 additional highlight that references a concrete number from the data (commits, activeDays, lateNightPercent, weekendPercent, topDays/topHours, workTypeMix percent).
+          - Keep tone neutral and observational. Use phrases like "in this git log" or "based on commits".
+          - Do NOT judge productivity, focus, effort, or work ethic.
+          - Do NOT mention health, well-being, burnout, stress, or similar.
+          - Do NOT recommend lifestyle changes (sleep, routine, work hours). Prefer technical/process suggestions.
+          - Do NOT use words like "consistent", "highly", "significant", or "trend".
+          - Do NOT mention commit size, complexity, code quality, or impact at all.
+          - Only mention ticket IDs if ticketPercent > 0.
+          - Do NOT mention "last week" / "7 days" / any time window unless dateRange is present; if present, reference it.
+          - Do NOT use the word "team" unless authorCount > 1 AND teamContext is not null.
+          - Tickets: you may only say "no ticket IDs detected in commit messages" if ticketPercent = 0. Do not claim tickets were opened/closed.
+          `
+        : computed.dataQuality === "medium"
+        ? `
+          Data quality is MEDIUM.
+          Rules:
+          - Phrase conclusions cautiously (use "suggests", "may indicate").
+          - Highlights must reference concrete numbers from the data.
+          - Do NOT mention commit size, complexity, code quality, or impact at all.
+          - Only mention ticket IDs if ticketPercent > 0.
+          - Do NOT mention "last week" / "7 days" / any time window unless dateRange is present; if present, reference it.
+          - Do NOT use the word "team" unless authorCount > 1 AND teamContext is not null.
+          - Tickets: you may only say "no ticket IDs detected in commit messages" if ticketPercent = 0. Do not claim tickets were opened/closed.
+          `
+        : `
+          Data quality is HIGH.
+          Rules:
+          - Highlights must reference concrete numbers from the data.
+          - Do NOT mention commit size, complexity, code quality, or impact unless provided (it is not provided in v1).
+          - Only mention ticket IDs if ticketPercent > 0.
+          - Do NOT mention "last week" / "7 days" / any time window unless dateRange is present; if present, reference it.
+          - Do NOT use the word "team" unless authorCount > 1 AND teamContext is not null.
+          - Tickets: you may only say "no ticket IDs detected in commit messages" if ticketPercent = 0. Do not claim tickets were opened/closed.
+          `;
+
     // LLM: narrative + recommendations (must not invent facts)
     const prompt = `
     You are FocusPulse. You must ONLY use the JSON data provided.
@@ -270,10 +359,14 @@ insightsV1Router.post(
     - Be concise and specific.
     - Highlights should reference real numbers from the data.
     - Recommendations must be actionable and realistic.
+    - Recommendations must be about improving data collection or commit hygiene, not personal habits.
     - If data is limited, say so. Do NOT invent metrics.
+    - Provide 3-5 highlights and 3-5 recommendations.
+
+    ${strictRules}
 
     Data:
-    ${JSON.stringify(computed)}
+    ${JSON.stringify(llmData)}
     `.trim();
 
     const narrativeRaw = await llm.generateJson<unknown>(prompt);
