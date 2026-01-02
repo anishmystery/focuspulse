@@ -6,7 +6,7 @@ import { OllamaClient } from "../services/llm/ollamaClient";
 
 export const insightsV1Router = Router();
 
-const CommitSchema = z.object({
+export const CommitSchema = z.object({
   hash: z.string(),
   authorName: z.string(),
   dateIso: z.string(),
@@ -28,13 +28,13 @@ const BodySchema = z.object({
   focusAuthor: z.string().optional(),
 });
 
-function dateKeyUTC(iso: string): string {
+export function dateKeyUTC(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "invalid";
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-function percentile(sorted: number[], p: number): number {
+export function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = (sorted.length - 1) * p;
   const lo = Math.floor(idx);
