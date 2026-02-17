@@ -67,7 +67,7 @@ type DataQuality = "low" | "medium" | "high";
 
 function computeDataQuality(
   activeDays: number,
-  commitCount: number
+  commitCount: number,
 ): DataQuality {
   if (activeDays < 7 || commitCount < 20) return "low";
   if (activeDays < 21 || commitCount < 75) return "medium";
@@ -82,7 +82,7 @@ function computeDataQuality(
 function computeFacts(
   commitsAll: Commit[],
   focusAuthor: string,
-  allAuthors: string[]
+  allAuthors: string[],
 ) {
   const commits = commitsAll.filter((c) => c.authorName === focusAuthor);
   if (commits.length === 0) {
@@ -260,13 +260,13 @@ function computeFacts(
 function pickSubjects(
   commitsAll: Commit[],
   focusAuthor: string,
-  maxSubjects: number
+  maxSubjects: number,
 ) {
   return commitsAll
     .filter((c) => c.authorName === focusAuthor)
     .slice()
     .sort(
-      (a, b) => new Date(b.dateIso).getTime() - new Date(a.dateIso).getTime()
+      (a, b) => new Date(b.dateIso).getTime() - new Date(a.dateIso).getTime(),
     )
     .slice(0, maxSubjects)
     .map((c) => c.subject);
@@ -285,11 +285,11 @@ insightsV2Router.post(
 
     const { authors, commits, focusAuthor, maxSubjects } = parsed.data;
     const uniqueAuthors = Array.from(new Set(authors)).sort((a, b) =>
-      a.localeCompare(b)
+      a.localeCompare(b),
     );
 
     const focus =
-      uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor.trim();
+      uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
 
     if (uniqueAuthors.length > 1 && !focus) {
       throw new HttpError(
@@ -297,12 +297,13 @@ insightsV2Router.post(
         "focusAuthor is required when multiple authors are present",
         {
           authors: uniqueAuthors,
-        }
+        },
       );
     }
 
     const facts = computeFacts(commits, focus!, uniqueAuthors);
     const subjects = pickSubjects(commits, focus!, maxSubjects ?? 60);
+    const lowSignal = subjects.length < 5;
 
     const llmInput = {
       authorCount: uniqueAuthors.length,
@@ -310,57 +311,96 @@ insightsV2Router.post(
       subjects,
     };
 
-    const strictRules =
-      facts.dataQuality === "low"
-        ? `
-        Data quality is LOW.
-        Rules:
-        - Keep tone neutral and observational; do NOT judge productivity, focus, effort, or work ethic.
-        - Do NOT mention health, well-being, burnout, stress, or lifestyle advice.
-        - Do NOT mention time windows like "last week" or "out of 7 days". You may reference facts.dateRange explicitly.
-        - Do NOT use the word "team" unless authorCount > 1 AND facts.teamContext is not null.
-        - Tickets: you may only say "No ticket IDs detected in commit messages" when facts.messageQuality.ticketPercent == 0.
-        - Provide 1-3 hypotheses max; phrase each hypothesis starting with "Might be ...".
-        `
-        : `
-        Rules:
-        - Do NOT mention time windows like "last week". You may reference facts.dateRange explicitly.
-        - Do NOT infer commit size/complexity/impact (not provided in v2).
-        - Do NOT use the word "team" unless authorCount > 1 AND facts.teamContext is not null.
-        - Each theme MUST include 2-6 evidenceSubjects copied verbatim from the provided subjects list.
-        - Each hypothesis MUST start with "Might be ..." and cite at least one numeric fact in the reason.
-        - Recommendations must be technical/process actions tied to facts or themes (no lifestyle advice).
-        - Tickets: only mention ticket IDs if facts.messageQuality.ticketPercent > 0, otherwise use the exact phrasing above.
-        `;
+    const baseInstructions = `
+    You are FocusPulse. Use ONLY the JSON provided. Do not invent facts.
+    Return ONLY valid JSON.
+
+    Always include keys:
+    themes (array), hypotheses (array), recommendations (array), watchouts (array).
+
+    Never:
+    - mention relative time windows ("last week", "last 2 weeks"); if referencing time, use facts.dateRange.from/to.
+    - infer commit size/complexity/impact/code quality/coding standards.
+    - make health/well-being/focus/stress claims or lifestyle advice.
+    - claim tickets were opened/closed; only talk about ticket IDs in commit subjects.
+    `.trim();
+
+    const lowSignalRules = `
+    LOW-SIGNAL MODE (subjects.length < 5):
+    - Set themes to [] and hypotheses to [].
+    - Provide 1-2 sentence summary based on facts.
+    - Provide 2-4 recommendations. Allowed categories:
+      (a) collect more git log data / extend date range
+      (b) avoid filtering authors if you want repo context
+      (c) commit message hygiene (Conventional Commits, adding ticket IDs if your workflow uses them)
+    - watchouts must be purely observational (e.g., "lateNightPercent is X%").
+    - Do NOT mention "team" or collaboration in low-signal mode.
+    - Summary must be neutral and factual. Do NOT label anything as "low" or "high" quality.
+    - Do NOT infer anything from focusAuthor (it is just a filter label).
+    - You may mention: commitCount, activeDays, lateNightPercent, dateRange.
+    `.trim();
+
+    const fullRules = `
+    FULL MODE:
+    - themes: 1-6 items. Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects (unique, no duplicates).
+    - Themes must be work topics inferred from subjects (auth, api, ui, build, ci, etc). Do NOT use meta themes like "Productivity", "Low data", "Single author".
+    - hypotheses: 0-4 items. Each statement MUST start with "Might be ...". Reasons must cite at least one numeric fact (e.g., lateNightPercent, workTypeMix percent, longestStreakDays).
+    - If facts.messageQuality.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
+    - Avoid the word "team" unless authorCount > 1 AND facts.teamContext is not null; prefer "across authors" / "repo context".
+    `.trim();
+
+    const schemaText = `
+    Return JSON with this schema:
+    {
+      "summary": string,
+      "themes": [{ "theme": string, "confidence"?: number, "evidenceSubjects": string[] }],
+      "hypotheses": [{ "statement": string, "reason": string, "confidence"?: number }],
+      "recommendations": [{ "action": string, "why": string, "confidence"?: number }],
+      "watchouts": string[],
+      "confidence"?: number
+    }
+    If you include any confidence field, it must be a number between 0 and 1; otherwise omit it.
+    `.trim();
 
     const prompt = `
-        You are FocusPulse. Use ONLY the JSON provided. Do not invent facts.
+    ${baseInstructions}
 
-        Return ONLY valid JSON with this schema:
-        {
-        "summary": string,
-        "themes": [{ "theme": string, "confidence"?: number, "evidenceSubjects": string[] }],
-        "hypotheses": [{ "statement": string, "reason": string, "confidence"?: number }],
-        "recommendations": [{ "action": string, "why": string, "confidence"?: number }],
-        "watchouts": string[],
-        "confidence"?: number
-        }
+    ${schemaText}
 
-        Hard requirements:
-        - evidenceSubjects MUST be exact strings from the provided subjects array.
-        - If facts.dataQuality is "low", emphasize limited conclusions and keep hypotheses cautious.
-        - Never mention "last week" or "7 days". If you mention dates, use facts.dateRange.
-        - Output must ALWAYS include these keys: themes (array), hypotheses (array), recommendations (array), watchouts (array). If unsure, use empty arrays.
-        - If you include any confidence field, it MUST be a number between 0 and 1. Otherwise omit it.
+    ${lowSignal ? lowSignalRules : fullRules}
 
+    Data:
+    ${JSON.stringify(llmInput)}
+    `.trim();
 
-        ${strictRules}
+    function buildLowSignalNarrative(facts: any) {
+      const commits = facts.totals.commits;
+      const activeDays = facts.totals.activeDays;
+      const from = String(facts.dateRange.from).slice(0, 10);
+      const to = String(facts.dateRange.to).slice(0, 10);
+      const sameDay = from === to;
 
-        Data:
-        ${JSON.stringify(llmInput)}
-        `.trim();
-
-    const narrativeRaw = await llm.generateJson<unknown>(prompt);
+      return {
+        summary: `Limited data: ${commits} commit${commits === 1 ? "" : "s"} across ${activeDays} active day${activeDays === 1 ? "" : "s"} (${sameDay ? from : `${from} to ${to}`})`,
+        themes: [],
+        hypotheses: [],
+        recommendations: [
+          {
+            action: "Collect 2-4 weeks of git log data",
+            why: "More history improves reliability of themes and hypotheses.",
+          },
+          {
+            action: "Optional: paste unfiltered logs for repo context",
+            why: "Including multiple authors enables repo-wide comparisons.",
+          },
+        ],
+        watchouts: [
+          `lateNightPercent is ${facts.rhythm.lateNightPercent}% (based on commit timestamps).`,
+          `activeDays is ${facts.totals.activeDays}.`,
+          `commits is ${facts.totals.commits}.`,
+        ],
+      };
+    }
 
     function clamp01(x: unknown): number | undefined {
       if (typeof x !== "number" || Number.isNaN(x)) return undefined;
@@ -386,24 +426,61 @@ insightsV2Router.post(
       return raw;
     }
 
-    const narrativeSafe = sanitizeNarrative(narrativeRaw);
+    let narrativeCandidate: any;
+
+    if (lowSignal) {
+      narrativeCandidate = buildLowSignalNarrative(facts);
+    } else {
+      const narrativeRaw = await llm.generateJson<unknown>(prompt);
+
+      const maybeWrapped =
+        narrativeRaw && typeof narrativeRaw === "object"
+          ? (narrativeRaw as any)
+          : null;
+      const unwrapped =
+        maybeWrapped &&
+        typeof maybeWrapped === "object" &&
+        "data" in maybeWrapped
+          ? maybeWrapped.data
+          : narrativeRaw;
+
+      narrativeCandidate =
+        unwrapped && typeof unwrapped === "object" ? unwrapped : {};
+    }
+
+    if (!Array.isArray(narrativeCandidate.themes))
+      narrativeCandidate.themes = [];
+    if (!Array.isArray(narrativeCandidate.hypotheses))
+      narrativeCandidate.hypotheses = [];
+    if (!Array.isArray(narrativeCandidate.recommendations))
+      narrativeCandidate.recommendations = [];
+    if (!Array.isArray(narrativeCandidate.watchouts))
+      narrativeCandidate.watchouts = [];
+
+    // If lowSignal, enforce empty themes/hypotheses even if something slipped in
+    if (lowSignal) {
+      narrativeCandidate.themes = [];
+      narrativeCandidate.hypotheses = [];
+    }
+
+    const narrativeSafe = sanitizeNarrative(narrativeCandidate);
     const narrativeParsed = InsightsV2NarrativeSchema.safeParse(narrativeSafe);
 
     if (!narrativeParsed.success) {
       throw new HttpError(
         502,
-        "LLM returned invalid narrative JSON",
-        narrativeParsed.error.flatten()
+        "Narrative JSON failed validation",
+        narrativeParsed.error.flatten(),
       );
     }
 
     res.json({
       ok: true,
       data: {
-        ...narrativeParsed,
+        ...narrativeParsed.data,
         modules: facts,
         dataQuality: facts.dataQuality,
       },
     });
-  })
+  }),
 );
