@@ -25,12 +25,13 @@ export class OllamaClient {
           model: env.OLLAMA_MODEL,
           prompt,
           stream: false,
+          keep_alive: "10m",
           options: {
             temperature: 0.2,
             num_predict: 400,
           },
         },
-        { timeout: env.OLLAMA_TIMEOUT_MS }
+        { timeout: env.OLLAMA_TIMEOUT_MS },
       );
 
       const raw: string = res.data?.response ?? "";
@@ -51,7 +52,11 @@ export class OllamaClient {
       }
     } catch (e: any) {
       if (e?.code === "ECONNABORTED") {
-        throw new HttpError(504, "LLM request timed out");
+        throw new HttpError(504, "LLM request timed out", {
+          model: env.OLLAMA_MODEL,
+          timeoutMs: env.OLLAMA_TIMEOUT_MS,
+          promptChars: prompt.length,
+        });
       }
       if (e?.response?.data) {
         throw new HttpError(502, "LLM request failed", e.response.data);
