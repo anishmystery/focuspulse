@@ -272,6 +272,54 @@ function pickSubjects(
     .map((c) => c.subject);
 }
 
+function buildDeterministicWatchouts(keyMetrics: any): string[] {
+  const out: string[] = [];
+
+  // thresholds
+  const LATE_NIGHT_THRESHOLD = 25; // %
+  const WEEKEND_THRESHOLD = 25; // %
+  const BURSTINESS_THRESHOLD = 2; // ratio
+  const GAP_THRESHOLD = 3; // days
+
+  if (
+    typeof keyMetrics.lateNightPercent === "number" &&
+    keyMetrics.lateNightPercent >= LATE_NIGHT_THRESHOLD
+  ) {
+    out.push(`keyMetrics.lateNightPercent is ${keyMetrics.lateNightPercent}%.`);
+  }
+
+  if (
+    typeof keyMetrics.weekendPercent === "number" &&
+    keyMetrics.weekendPercent >= WEEKEND_THRESHOLD
+  ) {
+    out.push(`keyMetrics.weekendPercent is ${keyMetrics.weekendPercent}%.`);
+  }
+
+  if (
+    typeof keyMetrics.burstiness === "number" &&
+    keyMetrics.burstiness >= BURSTINESS_THRESHOLD
+  ) {
+    out.push(`keyMetrics.burstiness is ${keyMetrics.burstiness}.`);
+  }
+
+  if (
+    typeof keyMetrics.longestGapDays === "number" &&
+    keyMetrics.longestGapDays >= GAP_THRESHOLD
+  ) {
+    out.push(`keyMetrics.longestGapDays is ${keyMetrics.longestGapDays}.`);
+  }
+
+  // Ticket IDs note is useful + deterministic
+  if (
+    typeof keyMetrics.ticketPercent === "number" &&
+    keyMetrics.ticketPercent === 0
+  ) {
+    out.push("No ticket IDs were detected in commit subjects.");
+  }
+
+  return out.slice(0, 4);
+}
+
 export const insightsV2Router = Router();
 const llm = new OllamaClient();
 
@@ -302,13 +350,36 @@ insightsV2Router.post(
     }
 
     const facts = computeFacts(commits, focus!, uniqueAuthors);
-    const subjects = pickSubjects(commits, focus!, maxSubjects ?? 60);
+    const maxForLLM = facts.dataQuality === "high" ? 60 : 30;
+    const subjects = pickSubjects(
+      commits,
+      focus!,
+      Math.min(maxSubjects ?? 60, maxForLLM),
+    );
     const lowSignal = subjects.length < 5;
+
+    const keyMetrics = {
+      commitCount: facts.totals.commits,
+      activeDays: facts.totals.activeDays,
+      weekendPercent: facts.rhythm.weekendPercent,
+      longestStreakDays: facts.consistency.longestStreakDays,
+      longestGapDays: facts.consistency.longestGapDays,
+      burstiness: facts.consistency.burstiness,
+      workTypeMix: facts.workTypeMix.map((t) => ({
+        type: t.type,
+        percent: t.percent,
+      })),
+      conventionalPercent: facts.messageQuality.conventionalPercent,
+      ticketPercent: facts.messageQuality.ticketPercent,
+    };
 
     const llmInput = {
       authorCount: uniqueAuthors.length,
-      facts,
+      focusAuthor: facts.focusAuthor,
+      dateRange: facts.dateRange,
+      keyMetrics,
       subjects,
+      teamContext: facts.teamContext,
     };
 
     const baseInstructions = `
@@ -318,6 +389,14 @@ insightsV2Router.post(
     Always include keys:
     themes (array), hypotheses (array), recommendations (array), watchouts (array).
 
+    Rules:
+    - When citing numbers, explicitly reference them from keyMetrics.
+    - keyMetrics represent global commit metadata; they are NOT theme-scoped.
+    - Do NOT compare themes using keyMetrics.
+    - If uncertain, return empty arrays instead of inventing insights.
+    - Do NOT generate watchouts. The backend will generate watchouts deterministically.
+    - Always return "watchouts": [].
+
     Never:
     - mention relative time windows ("last week", "last 2 weeks"); if referencing time, use facts.dateRange.from/to.
     - infer commit size/complexity/impact/code quality/coding standards.
@@ -325,28 +404,95 @@ insightsV2Router.post(
     - claim tickets were opened/closed; only talk about ticket IDs in commit subjects.
     `.trim();
 
-    const lowSignalRules = `
-    LOW-SIGNAL MODE (subjects.length < 5):
-    - Set themes to [] and hypotheses to [].
-    - Provide 1-2 sentence summary based on facts.
-    - Provide 2-4 recommendations. Allowed categories:
-      (a) collect more git log data / extend date range
-      (b) avoid filtering authors if you want repo context
-      (c) commit message hygiene (Conventional Commits, adding ticket IDs if your workflow uses them)
-    - watchouts must be purely observational (e.g., "lateNightPercent is X%").
-    - Do NOT mention "team" or collaboration in low-signal mode.
-    - Summary must be neutral and factual. Do NOT label anything as "low" or "high" quality.
-    - Do NOT infer anything from focusAuthor (it is just a filter label).
-    - You may mention: commitCount, activeDays, lateNightPercent, dateRange.
-    `.trim();
+    // const lowSignalRules = `
+    // LOW-SIGNAL MODE (subjects.length < 5):
+    // - Set themes to [] and hypotheses to [].
+    // - Provide 1-2 sentence summary based on facts.
+    // - Provide 2-4 recommendations. Allowed categories:
+    //   (a) collect more git log data / extend date range
+    //   (b) avoid filtering authors if you want repo context
+    //   (c) commit message hygiene (Conventional Commits, adding ticket IDs if your workflow uses them)
+    // - watchouts must be purely observational (e.g., "lateNightPercent is X%").
+    // - Do NOT mention "team" or collaboration in low-signal mode.
+    // - Summary must be neutral and factual. Do NOT label anything as "low" or "high" quality.
+    // - Do NOT infer anything from focusAuthor (it is just a filter label).
+    // - You may mention: commitCount, activeDays, lateNightPercent, dateRange.
+    // `.trim();
+
+    // const fullRules = `
+    // FULL MODE
+    // - themes: 1-6 items. Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects (unique, no duplicates).
+    // - Themes must be work topics inferred from subjects (auth, api, ui, build, ci, etc). Do NOT use meta themes like "Productivity", "Low data", "Single author".
+    // - hypotheses: 0-4 items. Each statement MUST start with "Might be ...". Reasons must cite at least one numeric fact (e.g., lateNightPercent, workTypeMix percent, longestStreakDays).
+    // - If facts.messageQuality.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
+    // - Avoid the word "team" unless authorCount > 1 AND facts.teamContext is not null; prefer "across authors" / "repo context".
+    // `.trim();
 
     const fullRules = `
-    FULL MODE:
-    - themes: 1-6 items. Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects (unique, no duplicates).
-    - Themes must be work topics inferred from subjects (auth, api, ui, build, ci, etc). Do NOT use meta themes like "Productivity", "Low data", "Single author".
-    - hypotheses: 0-4 items. Each statement MUST start with "Might be ...". Reasons must cite at least one numeric fact (e.g., lateNightPercent, workTypeMix percent, longestStreakDays).
-    - If facts.messageQuality.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
-    - Avoid the word "team" unless authorCount > 1 AND facts.teamContext is not null; prefer "across authors" / "repo context".
+    FULL MODE — Commit Pattern Intelligence Only
+
+    Themes (qualitative clusters):
+    - themes: 1-6 items.
+    - Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects.
+    - evidenceSubjects MUST be unique (no duplicates).
+    - Themes are qualitative topic clusters inferred from subjects (api, ui, auth, build, tooling, etc).
+    - Do NOT use meta themes like "Productivity", "Low data", "Single author".
+    - Themes must NOT reference numeric metrics.
+    - Do NOT compare themes using metrics (e.g., do NOT say "API more consistent than UI").
+
+    Hypotheses (metric-driven only):
+    - hypotheses: 0-4 items.
+    - Each hypothesis statement MUST start with: "Might indicate", "Might reflect", or "Might suggest".
+    - Hypotheses MUST be derived ONLY from keyMetrics (and optionally teamContext if present).
+    - Hypotheses must NOT mention themes or topic words from themes/evidenceSubjects (e.g., "api", "ui", "auth", "build", "middleware", "dashboard").
+    - Hypotheses must ONLY discuss global patterns such as:
+      cadence (weekendPercent, lateNightPercent, topDays, topHours),
+      consistency (longestStreakDays, longestGapDays, burstiness),
+      volume/spread (commitCount, activeDays),
+      work type distribution (workTypeMix),
+      message hygiene (conventionalPercent, ticketPercent).
+    - Do NOT use causal or statistical language such as:
+      "due to", "caused by", "leads to", "correlation", "results in", "improves", "reduces", "because of".
+    - Do NOT use subjective value words like "busy", "high", "low", "moderate" unless you include the exact metric values and keep phrasing neutral.
+    - Reasons MUST explicitly cite at least one metric using the key name, e.g. "keyMetrics.weekendPercent is 26.1%".
+    - Do NOT invent baselines, averages, or comparisons unless present in keyMetrics.
+
+    Work type mix referencing (important):
+    - keyMetrics.workTypeMix is an array of { type, percent }.
+    - Do NOT invent keys like "featurePercent" or "fixPercent".
+    - If you reference work type distribution, cite it by describing entries that exist, e.g.:
+      "keyMetrics.workTypeMix includes {type:'refactor', percent:34.8} and {type:'feat', percent:30.4}".
+
+    Team context referencing (only if present):
+    - teamContext is a separate object. Do NOT reference it via keyMetrics.
+    - Only mention teamContext if authorCount > 1 AND teamContext is not null.
+    - If you mention teamContext, keep it descriptive (shares/percentages only); do NOT infer collaboration quality.
+
+    Recommendations (pattern-aligned only):
+    - Provide 2-6 recommendations.
+    - Recommendations must be tied to keyMetrics or general commit hygiene.
+    - Allowed recommendation categories:
+      (1) commit message clarity (clear subject, scope, short explanation)
+      (2) adding ticket IDs if your workflow uses them (only if keyMetrics.ticketPercent == 0)
+      (3) batching or splitting commits for readability (general, not theme-specific)
+      (4) balancing work type distribution (based on keyMetrics.workTypeMix)
+      (5) smoothing cadence signals (based on weekendPercent or lateNightPercent), without health or lifestyle framing
+    - Do NOT recommend performance tuning, monitoring, scaling, runtime optimization, testing strategy, or architecture changes.
+    - Do NOT target recommendations to specific themes (no "batch UI commits"); keep them global.
+
+    Tickets:
+    - If keyMetrics.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
+    - Do NOT claim tickets were opened/closed or that issue tracking is incomplete.
+
+    Watchouts (observational only):
+    - Provide 0-4 bullets.
+    - Each watchout MUST reference a metric explicitly (e.g., "keyMetrics.weekendPercent is 26.1%").
+    - Watchouts must be purely observational — no advice, no "might improve", no causality.
+
+    General Constraints:
+    - Never mention relative time windows ("last week"). If referencing time, use dateRange.from/to.
+    - Do NOT infer code quality, system behavior, performance, or business impact.
+    - Use only the JSON provided.
     `.trim();
 
     const schemaText = `
@@ -367,7 +513,7 @@ insightsV2Router.post(
 
     ${schemaText}
 
-    ${lowSignal ? lowSignalRules : fullRules}
+    ${fullRules}
 
     Data:
     ${JSON.stringify(llmInput)}
@@ -463,7 +609,19 @@ insightsV2Router.post(
       narrativeCandidate.hypotheses = [];
     }
 
+    narrativeCandidate.watchouts = buildDeterministicWatchouts(keyMetrics);
+
     const narrativeSafe = sanitizeNarrative(narrativeCandidate);
+
+    // Deduplicate evidenceSubjects per theme
+    if (Array.isArray(narrativeSafe?.themes)) {
+      narrativeSafe.themes = narrativeSafe.themes.map((t: any) => {
+        if (!Array.isArray(t?.evidenceSubjects)) return t;
+        const uniq = Array.from(new Set(t.evidenceSubjects));
+        return { ...t, evidenceSubjects: uniq.slice(0, 6) };
+      });
+    }
+
     const narrativeParsed = InsightsV2NarrativeSchema.safeParse(narrativeSafe);
 
     if (!narrativeParsed.success) {
