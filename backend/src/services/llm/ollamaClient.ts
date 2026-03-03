@@ -27,7 +27,7 @@ export class OllamaClient {
           stream: false,
           keep_alive: "10m",
           options: {
-            temperature: 0.2,
+            temperature: 0.1,
             num_predict: 400,
           },
         },

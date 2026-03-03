@@ -7,20 +7,17 @@ import { asyncHandler } from "../utils/asyncHandler";
 
 export const ThemeSchema = z.object({
   theme: z.string().min(2),
-  confidence: z.number().min(0).max(1).optional().nullable(),
   evidenceSubjects: z.array(z.string().min(1)).min(1).max(6),
 });
 
 export const HypothesisSchema = z.object({
   statement: z.string().min(10), // must start with "Might ..."
   reason: z.string().min(10),
-  confidence: z.number().min(0).max(1).optional().nullable(),
 });
 
 export const RecommendationSchema = z.object({
   action: z.string().min(10),
   why: z.string().min(10),
-  confidence: z.number().min(0).max(1).optional().nullable(),
 });
 
 export const InsightsV2NarrativeSchema = z
@@ -30,27 +27,22 @@ export const InsightsV2NarrativeSchema = z
     hypotheses: z.array(HypothesisSchema).min(0).max(6).optional().default([]),
     recommendations: z
       .array(RecommendationSchema)
-      .min(1)
+      .min(0)
       .max(8)
       .optional()
       .default([]),
     watchouts: z.array(z.string().min(5)).max(6).optional().default([]),
-    confidence: z.number().min(0).max(1).optional().nullable(),
   })
   .transform((val) => ({
     ...val,
-    confidence: val.confidence ?? undefined,
     themes: val.themes.map((t) => ({
       ...t,
-      confidence: t.confidence ?? undefined,
     })),
     hypotheses: val.hypotheses.map((h) => ({
       ...h,
-      confidence: h.confidence ?? undefined,
     })),
     recommendations: val.recommendations.map((r) => ({
       ...r,
-      confidence: r.confidence ?? undefined,
     })),
   }));
 
@@ -320,6 +312,315 @@ function buildDeterministicWatchouts(keyMetrics: any): string[] {
   return out.slice(0, 4);
 }
 
+function buildLowSignalNarrative(facts: any) {
+  const commits = facts.totals.commits;
+  const activeDays = facts.totals.activeDays;
+  const from = String(facts.dateRange.from).slice(0, 10);
+  const to = String(facts.dateRange.to).slice(0, 10);
+  const sameDay = from === to;
+
+  return {
+    summary: `Limited data: ${commits} commit${commits === 1 ? "" : "s"} across ${activeDays} active day${activeDays === 1 ? "" : "s"} (${sameDay ? from : `${from} to ${to}`})`,
+    themes: [],
+    hypotheses: [],
+    recommendations: [
+      {
+        action: "Collect 2-4 weeks of git log data",
+        why: "More history improves reliability of themes and hypotheses.",
+      },
+      {
+        action: "Optional: paste unfiltered logs for repo context",
+        why: "Including multiple authors enables repo-wide comparisons.",
+      },
+    ],
+    watchouts: [
+      `lateNightPercent is ${facts.rhythm.lateNightPercent}% (based on commit timestamps).`,
+      `activeDays is ${facts.totals.activeDays}.`,
+      `commits is ${facts.totals.commits}.`,
+    ],
+  };
+}
+
+function buildDeterministicSummary(
+  dateRange: { from: string; to: string },
+  keyMetrics: any,
+  focusAuthor: string,
+) {
+  const from = String(dateRange.from).slice(0, 10);
+  const to = String(dateRange.to).slice(0, 10);
+  return `FocusPulse analysis for ${focusAuthor} from ${from} to ${to}. commits=${keyMetrics.commitCount}, activeDays=${keyMetrics.activeDays}, conventionalPercent=${keyMetrics.conventionalPercent}, ticketPercent=${keyMetrics.ticketPercent}.`;
+}
+
+function clamp01(x: unknown): number | undefined {
+  if (typeof x !== "number" || Number.isNaN(x)) return undefined;
+  if (x < 0 || x > 1) return undefined;
+  return x;
+}
+
+function sanitizeNarrative(raw: any) {
+  if (!raw || typeof raw !== "object") return raw;
+
+  if ("confidence" in raw) raw.confidence = clamp01(raw.confidence);
+
+  for (const key of ["themes", "hypotheses", "recommendations"] as const) {
+    if (Array.isArray(raw[key])) {
+      raw[key] = raw[key].map((item: any) => {
+        if (item && typeof item === "object" && "confidence" in item) {
+          item.confidence = clamp01(item.confidence);
+        }
+        return item;
+      });
+    }
+  }
+  return raw;
+}
+
+type Narrative = {
+  summary: string;
+  themes: Array<{ theme: string; evidenceSubjects: string[] }>;
+  hypotheses: Array<{ statement: string; reason: string }>;
+  recommendations: Array<{ action: string; why: string }>;
+  watchouts: string[];
+};
+
+type KeyMetrics = {
+  commitCount: number;
+  activeDays: number;
+  weekendPercent: number;
+  lateNightPercent: number;
+  conventionalPercent: number;
+  ticketPercent: number;
+  burstiness?: number;
+  longestGapDays?: number;
+  longestStreakDays?: number;
+  workTypeMix: Array<{ type: string; percent: number; count?: number }>;
+};
+
+function enforceNarrativeRules(
+  narrative: Narrative,
+  keyMetrics: KeyMetrics,
+): Narrative {
+  const out: Narrative = {
+    ...narrative,
+    themes: Array.isArray(narrative.themes) ? narrative.themes : [],
+    hypotheses: Array.isArray(narrative.hypotheses) ? narrative.hypotheses : [],
+    recommendations: Array.isArray(narrative.recommendations)
+      ? narrative.recommendations
+      : [],
+    watchouts: [],
+  };
+
+  const maxWorkTypePercent = Math.max(
+    0,
+    ...((keyMetrics.workTypeMix ?? []).map((x) => x.percent) as number[]),
+  );
+
+  // --- Hypotheses: must cite keyMetrics.<field> ---
+  out.hypotheses = out.hypotheses.filter((h) => {
+    if (!h || typeof h.statement !== "string" || typeof h.reason !== "string")
+      return false;
+    if (!h.reason.includes("keyMetrics.")) return false;
+
+    // Optional: light alignment check based on which metric is referenced
+    const r = h.reason;
+    const s = h.statement.toLowerCase();
+
+    const citesWeekend = r.includes("keyMetrics.weekendPercent");
+    const citesLate = r.includes("keyMetrics.lateNightPercent");
+    const citesWorkType = r.includes("keyMetrics.workTypeMix");
+    const citesMsg =
+      r.includes("keyMetrics.conventionalPercent") ||
+      r.includes("keyMetrics.ticketPercent");
+    const citesConsistency =
+      r.includes("keyMetrics.longestGapDays") ||
+      r.includes("keyMetrics.longestStreakDays") ||
+      r.includes("keyMetrics.burstiness");
+
+    if (citesWeekend && !s.includes("weekend")) return false;
+    if (citesLate && !s.includes("late")) return false;
+    if (citesWorkType && !(s.includes("mix") || s.includes("balance")))
+      return false;
+    if (
+      citesMsg &&
+      !(s.includes("message") || s.includes("ticket") || s.includes("hygiene"))
+    )
+      return false;
+    if (
+      citesConsistency &&
+      !(
+        s.includes("gap") ||
+        s.includes("streak") ||
+        s.includes("burst") ||
+        s.includes("consisten")
+      )
+    )
+      return false;
+
+    return true;
+  });
+
+  // --- Recommendations: enforce triggers deterministically ---
+  out.recommendations = out.recommendations.filter((rec) => {
+    if (!rec || typeof rec.action !== "string" || typeof rec.why !== "string")
+      return false;
+
+    // Must cite keyMetrics. (prevents "conventionalPercent is 100" missing prefix)
+    if (!rec.why.includes("keyMetrics.")) return false;
+
+    const a = rec.action.toLowerCase();
+
+    const looksLikeTicket = a.includes("ticket");
+    const looksLikeClarity =
+      a.includes("clarity") ||
+      a.includes("message") ||
+      a.includes("conventional");
+    const looksLikeBalance = a.includes("balance") || a.includes("mix");
+    const looksLikeCadence =
+      a.includes("cadence") || a.includes("weekend") || a.includes("late");
+
+    if (looksLikeTicket) return keyMetrics.ticketPercent === 0;
+    if (looksLikeClarity) return keyMetrics.conventionalPercent < 95;
+    if (looksLikeBalance) return maxWorkTypePercent >= 60;
+    if (looksLikeCadence)
+      return (
+        keyMetrics.weekendPercent >= 25 || keyMetrics.lateNightPercent >= 20
+      );
+
+    // If we can't categorize it, drop it (prevents random advice like “Improve API documentation”)
+    return false;
+  });
+
+  // Hard cap in case model rambles
+  out.themes = out.themes.slice(0, 4);
+  out.hypotheses = out.hypotheses.slice(0, 3);
+  out.recommendations = out.recommendations.slice(0, 4);
+
+  // Always empty here; server will overwrite deterministically later
+  out.watchouts = [];
+
+  return out;
+}
+
+function addDeterministicFallbacks(
+  narrative: Narrative,
+  keyMetrics: KeyMetrics,
+): Narrative {
+  const out: Narrative = {
+    ...narrative,
+    themes: Array.isArray(narrative.themes) ? narrative.themes : [],
+    hypotheses: Array.isArray(narrative.hypotheses) ? narrative.hypotheses : [],
+    recommendations: Array.isArray(narrative.recommendations)
+      ? narrative.recommendations
+      : [],
+    watchouts: Array.isArray(narrative.watchouts) ? narrative.watchouts : [],
+  };
+
+  const maxType = (keyMetrics.workTypeMix ?? []).reduce(
+    (best, x) => (x.percent > best.percent ? x : best),
+    { type: "unknown", percent: 0 },
+  );
+
+  const triggerTicket = keyMetrics.ticketPercent === 0;
+  const triggerClarity = keyMetrics.conventionalPercent < 95;
+  const triggerBalance = maxType.percent >= 60;
+  const triggerCadence =
+    keyMetrics.weekendPercent >= 25 || keyMetrics.lateNightPercent >= 20;
+
+  const hasRec = (needle: string) =>
+    out.recommendations.some(
+      (r) =>
+        typeof r?.action === "string" &&
+        r.action.toLowerCase().includes(needle),
+    );
+
+  // --- Deterministic recommendations (only add if triggers hold) ---
+  // Add up to 2 fallback recs to keep output useful but not spammy.
+  if (out.recommendations.length === 0) {
+    if (triggerTicket && !hasRec("ticket")) {
+      out.recommendations.push({
+        action: "Add ticket IDs to commit subjects",
+        why: `keyMetrics.ticketPercent is ${keyMetrics.ticketPercent}`,
+      });
+    }
+
+    if (triggerCadence && !hasRec("late") && !hasRec("weekend")) {
+      // Prefer late-night if it is the bigger driver
+      if (keyMetrics.lateNightPercent >= 20) {
+        out.recommendations.push({
+          action: "Reduce late-night commit concentration",
+          why: `keyMetrics.lateNightPercent is ${keyMetrics.lateNightPercent}%`,
+        });
+      } else {
+        out.recommendations.push({
+          action: "Reduce weekend commit concentration",
+          why: `keyMetrics.weekendPercent is ${keyMetrics.weekendPercent}%`,
+        });
+      }
+    }
+
+    // If still empty and a different trigger applies, add one more (max 2 total)
+    if (
+      out.recommendations.length === 0 &&
+      triggerClarity &&
+      !hasRec("message")
+    ) {
+      out.recommendations.push({
+        action: "Improve commit message clarity",
+        why: `keyMetrics.conventionalPercent is ${keyMetrics.conventionalPercent}`,
+      });
+    }
+
+    if (
+      out.recommendations.length < 2 &&
+      triggerBalance &&
+      !hasRec("balance")
+    ) {
+      out.recommendations.push({
+        action: "Balance work types across commits",
+        why: `keyMetrics.workTypeMix includes {type:'${maxType.type}', percent:${maxType.percent}}`,
+      });
+    }
+
+    // Hard cap
+    out.recommendations = out.recommendations.slice(0, 2);
+  }
+
+  // --- Deterministic hypotheses (only if LLM gave none usable) ---
+  if (out.hypotheses.length === 0) {
+    // Pick the strongest, most defensible single hypothesis.
+    if (keyMetrics.lateNightPercent >= 20) {
+      out.hypotheses.push({
+        statement: "Might suggest a meaningful share of late-night commits.",
+        reason: `keyMetrics.lateNightPercent is ${keyMetrics.lateNightPercent}%`,
+      });
+    } else if (keyMetrics.weekendPercent >= 25) {
+      out.hypotheses.push({
+        statement: "Might indicate some weekend activity in commit timing.",
+        reason: `keyMetrics.weekendPercent is ${keyMetrics.weekendPercent}%`,
+      });
+    } else {
+      // Use consistency if available; otherwise fall back to workTypeMix diversity.
+      if (typeof keyMetrics.longestGapDays === "number") {
+        out.hypotheses.push({
+          statement: "Might suggest a steady day-to-day commit cadence.",
+          reason: `keyMetrics.longestGapDays is ${keyMetrics.longestGapDays}`,
+        });
+      } else if (maxType.percent > 0) {
+        out.hypotheses.push({
+          statement: "Might reflect a varied work-type mix across commits.",
+          reason: `keyMetrics.workTypeMix includes {type:'${maxType.type}', percent:${maxType.percent}}`,
+        });
+      }
+    }
+  }
+
+  // Keep things bounded
+  out.hypotheses = out.hypotheses.slice(0, 3);
+  out.recommendations = out.recommendations.slice(0, 4);
+
+  return out;
+}
+
 export const insightsV2Router = Router();
 const llm = new OllamaClient();
 
@@ -362,6 +663,7 @@ insightsV2Router.post(
       commitCount: facts.totals.commits,
       activeDays: facts.totals.activeDays,
       weekendPercent: facts.rhythm.weekendPercent,
+      lateNightPercent: facts.rhythm.lateNightPercent,
       longestStreakDays: facts.consistency.longestStreakDays,
       longestGapDays: facts.consistency.longestGapDays,
       burstiness: facts.consistency.burstiness,
@@ -382,195 +684,83 @@ insightsV2Router.post(
       teamContext: facts.teamContext,
     };
 
-    const baseInstructions = `
-    You are FocusPulse. Use ONLY the JSON provided. Do not invent facts.
-    Return ONLY valid JSON.
+    const prompt = `
+    You are FocusPulse.
 
-    Always include keys:
-    themes (array), hypotheses (array), recommendations (array), watchouts (array).
+    You will receive a JSON object named "Data". Use ONLY what is in Data.
+    Do not invent facts. Do not add extra keys. Do not add confidence fields.
+    Return ONLY valid JSON (no markdown, no commentary).
 
-    Rules:
-    - When citing numbers, explicitly reference them from keyMetrics.
-    - keyMetrics represent global commit metadata; they are NOT theme-scoped.
-    - Do NOT compare themes using keyMetrics.
-    - If uncertain, return empty arrays instead of inventing insights.
-    - Do NOT generate watchouts. The backend will generate watchouts deterministically.
-    - Always return "watchouts": [].
-
-    Never:
-    - mention relative time windows ("last week", "last 2 weeks"); if referencing time, use facts.dateRange.from/to.
-    - infer commit size/complexity/impact/code quality/coding standards.
-    - make health/well-being/focus/stress claims or lifestyle advice.
-    - claim tickets were opened/closed; only talk about ticket IDs in commit subjects.
-    `.trim();
-
-    // const lowSignalRules = `
-    // LOW-SIGNAL MODE (subjects.length < 5):
-    // - Set themes to [] and hypotheses to [].
-    // - Provide 1-2 sentence summary based on facts.
-    // - Provide 2-4 recommendations. Allowed categories:
-    //   (a) collect more git log data / extend date range
-    //   (b) avoid filtering authors if you want repo context
-    //   (c) commit message hygiene (Conventional Commits, adding ticket IDs if your workflow uses them)
-    // - watchouts must be purely observational (e.g., "lateNightPercent is X%").
-    // - Do NOT mention "team" or collaboration in low-signal mode.
-    // - Summary must be neutral and factual. Do NOT label anything as "low" or "high" quality.
-    // - Do NOT infer anything from focusAuthor (it is just a filter label).
-    // - You may mention: commitCount, activeDays, lateNightPercent, dateRange.
-    // `.trim();
-
-    // const fullRules = `
-    // FULL MODE
-    // - themes: 1-6 items. Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects (unique, no duplicates).
-    // - Themes must be work topics inferred from subjects (auth, api, ui, build, ci, etc). Do NOT use meta themes like "Productivity", "Low data", "Single author".
-    // - hypotheses: 0-4 items. Each statement MUST start with "Might be ...". Reasons must cite at least one numeric fact (e.g., lateNightPercent, workTypeMix percent, longestStreakDays).
-    // - If facts.messageQuality.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
-    // - Avoid the word "team" unless authorCount > 1 AND facts.teamContext is not null; prefer "across authors" / "repo context".
-    // `.trim();
-
-    const fullRules = `
-    FULL MODE — Commit Pattern Intelligence Only
-
-    Themes (qualitative clusters):
-    - themes: 1-6 items.
-    - Each theme MUST include 1-6 evidenceSubjects copied verbatim from subjects.
-    - evidenceSubjects MUST be unique (no duplicates).
-    - Themes are qualitative topic clusters inferred from subjects (api, ui, auth, build, tooling, etc).
-    - Do NOT use meta themes like "Productivity", "Low data", "Single author".
-    - Themes must NOT reference numeric metrics.
-    - Do NOT compare themes using metrics (e.g., do NOT say "API more consistent than UI").
-
-    Hypotheses (metric-driven only):
-    - hypotheses: 0-4 items.
-    - Each hypothesis statement MUST start with: "Might indicate", "Might reflect", or "Might suggest".
-    - Hypotheses MUST be derived ONLY from keyMetrics (and optionally teamContext if present).
-    - Hypotheses must NOT mention themes or topic words from themes/evidenceSubjects (e.g., "api", "ui", "auth", "build", "middleware", "dashboard").
-    - Hypotheses must ONLY discuss global patterns such as:
-      cadence (weekendPercent, lateNightPercent, topDays, topHours),
-      consistency (longestStreakDays, longestGapDays, burstiness),
-      volume/spread (commitCount, activeDays),
-      work type distribution (workTypeMix),
-      message hygiene (conventionalPercent, ticketPercent).
-    - Do NOT use causal or statistical language such as:
-      "due to", "caused by", "leads to", "correlation", "results in", "improves", "reduces", "because of".
-    - Do NOT use subjective value words like "busy", "high", "low", "moderate" unless you include the exact metric values and keep phrasing neutral.
-    - Reasons MUST explicitly cite at least one metric using the key name, e.g. "keyMetrics.weekendPercent is 26.1%".
-    - Do NOT invent baselines, averages, or comparisons unless present in keyMetrics.
-
-    Work type mix referencing (important):
-    - keyMetrics.workTypeMix is an array of { type, percent }.
-    - Do NOT invent keys like "featurePercent" or "fixPercent".
-    - If you reference work type distribution, cite it by describing entries that exist, e.g.:
-      "keyMetrics.workTypeMix includes {type:'refactor', percent:34.8} and {type:'feat', percent:30.4}".
-
-    Team context referencing (only if present):
-    - teamContext is a separate object. Do NOT reference it via keyMetrics.
-    - Only mention teamContext if authorCount > 1 AND teamContext is not null.
-    - If you mention teamContext, keep it descriptive (shares/percentages only); do NOT infer collaboration quality.
-
-    Recommendations (pattern-aligned only):
-    - Provide 2-6 recommendations.
-    - Recommendations must be tied to keyMetrics or general commit hygiene.
-    - Allowed recommendation categories:
-      (1) commit message clarity (clear subject, scope, short explanation)
-      (2) adding ticket IDs if your workflow uses them (only if keyMetrics.ticketPercent == 0)
-      (3) batching or splitting commits for readability (general, not theme-specific)
-      (4) balancing work type distribution (based on keyMetrics.workTypeMix)
-      (5) smoothing cadence signals (based on weekendPercent or lateNightPercent), without health or lifestyle framing
-    - Do NOT recommend performance tuning, monitoring, scaling, runtime optimization, testing strategy, or architecture changes.
-    - Do NOT target recommendations to specific themes (no "batch UI commits"); keep them global.
-
-    Tickets:
-    - If keyMetrics.ticketPercent == 0, you may say only: "No ticket IDs were detected in commit subjects."
-    - Do NOT claim tickets were opened/closed or that issue tracking is incomplete.
-
-    Watchouts (observational only):
-    - Provide 0-4 bullets.
-    - Each watchout MUST reference a metric explicitly (e.g., "keyMetrics.weekendPercent is 26.1%").
-    - Watchouts must be purely observational — no advice, no "might improve", no causality.
-
-    General Constraints:
-    - Never mention relative time windows ("last week"). If referencing time, use dateRange.from/to.
-    - Do NOT infer code quality, system behavior, performance, or business impact.
-    - Use only the JSON provided.
-    `.trim();
-
-    const schemaText = `
-    Return JSON with this schema:
+    OUTPUT SCHEMA (exact keys):
     {
       "summary": string,
-      "themes": [{ "theme": string, "confidence"?: number, "evidenceSubjects": string[] }],
-      "hypotheses": [{ "statement": string, "reason": string, "confidence"?: number }],
-      "recommendations": [{ "action": string, "why": string, "confidence"?: number }],
-      "watchouts": string[],
-      "confidence"?: number
+      "themes": [{ "theme": string, "evidenceSubjects": string[] }],
+      "hypotheses": [{ "statement": string, "reason": string }],
+      "recommendations": [{ "action": string, "why": string }],
+      "watchouts": []
     }
-    If you include any confidence field, it must be a number between 0 and 1; otherwise omit it.
-    `.trim();
 
-    const prompt = `
-    ${baseInstructions}
+    HARD RULES:
+    1) "watchouts" MUST always be [].
+    2) Do not include "confidence" fields anywhere.
+    3) Do not add any keys beyon the schema above.
+    4) Evidence subjects MUST be copied verbatim from Data.subjects (no edits).
+    5) Do not cite numbers unless they come from Data.keyMetrics or Data.dateRange.
+    6) Never use relative time ("last week"). If mentioning dates, use Data.dateRange.from/to.
 
-    ${schemaText}
+    SUMMARY RULES:
+    - 1-2 sentences, neutral, factual.
+    - Must include: Data.keyMetrics.commitCount, Data.keyMetrics.activeDays, and Data.dateRange.from/to.
 
-    ${fullRules}
+    THEMES RULES:
+    - 1-4 themes (use fewer if Data.subjects is small).
+    - Each theme:
+      - theme: 2-5 words, topic-oriented (e.g., "API changes", "UI improvements")
+      - evidenceSubjects: 2-6 UNIQUE subjects, copied verbatim from Data.subjects.
+    - Do NOT mention numeric metrics inside themes.
+
+    HYPOTHESES RULES (metric-only, global patterns only):
+    - 0-3 hypotheses.
+    - statement MUST start with exactly one of:
+      - "Might indicate ..."
+      - "Might reflect ..."
+      - "Might suggest ..."
+    - statement must talk ONLY about global patterns (cadence, consistency, work type mix, message hygiene).
+    - statement must NOT mention any topic words/scopes like "API", "UI", "auth", "build", or any scope-like words from subjects.
+    - reason must cite at least ONE metric using exact key names, e.g.:
+      "keyMetrics.weekendPercent is 23.1%"
+    - The metric cited in "reason" must match the statement:
+      - weekendPercent -> weekend work pattern
+      - lateNightPercent -> late-night work pattern
+      - longestGapDays/longestStreakDays/burstiness -> gaps/streaks/bursts/consistence
+      - workTypeMix -> balance/mix of feat/fix/refactor/ci/build
+      - conventionalPercent/ticketPercent -> message hygiene/tickets
+
+    RECOMMENDATIONS RULES (global only, metric-triggered):
+    - 2-4 recommendations.
+    - Only include a recommendation if its trigger is true.
+    - Each "why" must cite at least ONE metric VALUE from Data using the exact pattern:
+      "keyMetrics.<field> is <value>"
+      Examples:
+      - "keyMetrics.conventionalPercent is 100"
+      - "keyMetrics.ticketPercent is 0"
+      - "keyMetrics.weekendPercent is 22.2%"
+      - "keyMetrics.workTypeMix includes {type:'fix', percent:44.4}"
+    - Do NOT output trigger conditions like "< 95" or ">= 60" in "why".
+
+    Triggers:
+    - Ticket IDs: only if keyMetrics.ticketPercent == 0.
+    - Commit message clarity: only if keyMetrics.conventionalPercent < 95.
+    - Work-type balance: only if any entry in keyMetrics.workTypeMix has percent >= 60.
+    - Cadence smoothing: only if keyMetrics.weekendPercent >= 25 OR keyMetrics.lateNightPercent >= 20.
+
+    FINAL CHECK (must follow):
+    - If you cannot satisfy a section's rules, return [] for that section only.
+    - Always return valid JSON with all top-level keys present.
 
     Data:
     ${JSON.stringify(llmInput)}
     `.trim();
-
-    function buildLowSignalNarrative(facts: any) {
-      const commits = facts.totals.commits;
-      const activeDays = facts.totals.activeDays;
-      const from = String(facts.dateRange.from).slice(0, 10);
-      const to = String(facts.dateRange.to).slice(0, 10);
-      const sameDay = from === to;
-
-      return {
-        summary: `Limited data: ${commits} commit${commits === 1 ? "" : "s"} across ${activeDays} active day${activeDays === 1 ? "" : "s"} (${sameDay ? from : `${from} to ${to}`})`,
-        themes: [],
-        hypotheses: [],
-        recommendations: [
-          {
-            action: "Collect 2-4 weeks of git log data",
-            why: "More history improves reliability of themes and hypotheses.",
-          },
-          {
-            action: "Optional: paste unfiltered logs for repo context",
-            why: "Including multiple authors enables repo-wide comparisons.",
-          },
-        ],
-        watchouts: [
-          `lateNightPercent is ${facts.rhythm.lateNightPercent}% (based on commit timestamps).`,
-          `activeDays is ${facts.totals.activeDays}.`,
-          `commits is ${facts.totals.commits}.`,
-        ],
-      };
-    }
-
-    function clamp01(x: unknown): number | undefined {
-      if (typeof x !== "number" || Number.isNaN(x)) return undefined;
-      if (x < 0 || x > 1) return undefined;
-      return x;
-    }
-
-    function sanitizeNarrative(raw: any) {
-      if (!raw || typeof raw !== "object") return raw;
-
-      if ("confidence" in raw) raw.confidence = clamp01(raw.confidence);
-
-      for (const key of ["themes", "hypotheses", "recommendations"] as const) {
-        if (Array.isArray(raw[key])) {
-          raw[key] = raw[key].map((item: any) => {
-            if (item && typeof item === "object" && "confidence" in item) {
-              item.confidence = clamp01(item.confidence);
-            }
-            return item;
-          });
-        }
-      }
-      return raw;
-    }
 
     let narrativeCandidate: any;
 
@@ -609,7 +799,32 @@ insightsV2Router.post(
       narrativeCandidate.hypotheses = [];
     }
 
+    narrativeCandidate = enforceNarrativeRules(narrativeCandidate, keyMetrics);
+    narrativeCandidate = addDeterministicFallbacks(
+      narrativeCandidate,
+      keyMetrics,
+    );
     narrativeCandidate.watchouts = buildDeterministicWatchouts(keyMetrics);
+    narrativeCandidate.summary = buildDeterministicSummary(
+      facts.dateRange,
+      keyMetrics,
+      focusAuthor,
+    );
+    narrativeCandidate.hypotheses = (narrativeCandidate.hypotheses ?? []).map(
+      (h: { reason: string | string[] }) => {
+        if (h?.reason?.includes("keyMetrics.workTypeMix")) {
+          return {
+            statement: "Might reflect a varied work-type mix across commits.",
+            reason: h.reason,
+          };
+        }
+        return h;
+      },
+    );
+    narrativeCandidate.themes = (narrativeCandidate.themes ?? []).filter(
+      (t: { evidenceSubjects: string | any[] }) =>
+        (t?.evidenceSubjects.length ?? 0) >= 2,
+    );
 
     const narrativeSafe = sanitizeNarrative(narrativeCandidate);
 
