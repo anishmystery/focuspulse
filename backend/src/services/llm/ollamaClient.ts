@@ -3,16 +3,24 @@ import { env } from "../../config";
 import { HttpError } from "../../utils/httpError";
 
 function extractFirstJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
+  // strip common wrappers
+  const cleaned = text
+    .replace(/```json\s*/g, "")
+    .replace(/```\s*/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("{");
   if (start === -1) return null;
 
   let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
     if (ch === "{") depth++;
     if (ch === "}") depth--;
-    if (depth === 0) return text.slice(start, i + 1);
+    if (depth === 0) return cleaned.slice(start, i + 1);
   }
+
+  // We saw a "{" but never returned to depth 0 => truncated JSON
   return null;
 }
 
@@ -25,22 +33,43 @@ export class OllamaClient {
           model: env.OLLAMA_MODEL,
           prompt,
           stream: false,
+
+          // Strongly nudges "JSON only" behavior (supported on modern Ollama)
+          format: "json",
+
           keep_alive: "10m",
           options: {
             temperature: 0.1,
-            num_predict: 400,
+            // 400 is too small for your themes/hypotheses/recs sometimes
+            num_predict: 1200,
           },
         },
         { timeout: env.OLLAMA_TIMEOUT_MS },
       );
 
       const raw: string = res.data?.response ?? "";
+      const trimmed = raw.trim();
+
+      // If JSON mode worked and it returned a clean object, parse directly.
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          return JSON.parse(trimmed) as T;
+        } catch {
+          // fall through to extractor
+        }
+      }
+
       const jsonStr = extractFirstJsonObject(raw);
 
       if (!jsonStr) {
-        throw new HttpError(502, "LLM did not return JSON", {
-          raw: raw.slice(0, 500),
-        });
+        const sawOpenBrace = raw.includes("{");
+        throw new HttpError(
+          502,
+          sawOpenBrace
+            ? "LLM returned truncated JSON (increase num_predict or shorten output)"
+            : "LLM did not return JSON",
+          { raw: raw.slice(0, 500) },
+        );
       }
 
       try {

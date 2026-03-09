@@ -71,7 +71,7 @@ function computeDataQuality(
  * Keep this as facts-only.
  */
 
-function computeFacts(
+export function computeFacts(
   commitsAll: Commit[],
   focusAuthor: string,
   allAuthors: string[],
@@ -249,7 +249,7 @@ function computeFacts(
   };
 }
 
-function pickSubjects(
+export function pickSubjects(
   commitsAll: Commit[],
   focusAuthor: string,
   maxSubjects: number,
@@ -264,7 +264,7 @@ function pickSubjects(
     .map((c) => c.subject);
 }
 
-function buildDeterministicWatchouts(keyMetrics: any): string[] {
+export function buildDeterministicWatchouts(keyMetrics: any): string[] {
   const out: string[] = [];
 
   // thresholds
@@ -312,7 +312,7 @@ function buildDeterministicWatchouts(keyMetrics: any): string[] {
   return out.slice(0, 4);
 }
 
-function buildLowSignalNarrative(facts: any) {
+export function buildLowSignalNarrative(facts: any) {
   const commits = facts.totals.commits;
   const activeDays = facts.totals.activeDays;
   const from = String(facts.dateRange.from).slice(0, 10);
@@ -341,7 +341,7 @@ function buildLowSignalNarrative(facts: any) {
   };
 }
 
-function buildDeterministicSummary(
+export function buildDeterministicSummary(
   dateRange: { from: string; to: string },
   keyMetrics: any,
   focusAuthor: string,
@@ -351,13 +351,13 @@ function buildDeterministicSummary(
   return `FocusPulse analysis for ${focusAuthor} from ${from} to ${to}. commits=${keyMetrics.commitCount}, activeDays=${keyMetrics.activeDays}, conventionalPercent=${keyMetrics.conventionalPercent}, ticketPercent=${keyMetrics.ticketPercent}.`;
 }
 
-function clamp01(x: unknown): number | undefined {
+export function clamp01(x: unknown): number | undefined {
   if (typeof x !== "number" || Number.isNaN(x)) return undefined;
   if (x < 0 || x > 1) return undefined;
   return x;
 }
 
-function sanitizeNarrative(raw: any) {
+export function sanitizeNarrative(raw: any) {
   if (!raw || typeof raw !== "object") return raw;
 
   if ("confidence" in raw) raw.confidence = clamp01(raw.confidence);
