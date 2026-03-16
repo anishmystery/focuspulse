@@ -10,7 +10,7 @@ const NormalizeGitLogBody = z.object({
   text: z.string().min(1),
 });
 
-type CommitType =
+export type CommitType =
   | "feat"
   | "fix"
   | "refactor"
@@ -23,7 +23,7 @@ type CommitType =
   | "build"
   | "other";
 
-function classifySubject(subject: string): {
+export function classifySubject(subject: string): {
   type: CommitType;
   tags: string[];
   ticketIds: string[];
@@ -70,7 +70,7 @@ function classifySubject(subject: string): {
   return { type, tags: Array.from(new Set(tags)), ticketIds };
 }
 
-function parseGitLogLine(line: string, lineNumber: number) {
+export function parseGitLogLine(line: string, lineNumber: number) {
   // We only split on the first 3 pipes so subjects containing "|" don’t break parsing
   const i1 = line.indexOf("|");
   const i2 = i1 === -1 ? -1 : line.indexOf("|", i1 + 1);
@@ -157,6 +157,59 @@ function parseGitLogLine(line: string, lineNumber: number) {
   };
 }
 
+
+export function normalizeGitLogText(rawText: string) {
+  // Simple normalization: trim and drop empty lines
+  const lines = rawText
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0);
+
+  if (lines.length === 0) {
+    throw new HttpError(400, "No parsable lines found");
+  }
+
+  const warnings: Array<{
+    lineNumber: number;
+    reason: string;
+    line: string;
+  }> = [];
+  const commits: any[] = [];
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const lineNumber = idx + 1;
+    const result = parseGitLogLine(lines[idx], lineNumber);
+    if (!result.ok) warnings.push(result.warning);
+    else commits.push(result.commit);
+  }
+
+  if (commits.length === 0) {
+    throw new HttpError(422, "Unable to parse any commits", {
+      warnings: warnings.slice(0, 20),
+    });
+  }
+
+  const dates = commits
+    .map((c) => new Date(c.dateIso).getTime())
+    .sort((a, b) => a - b);
+  const authorsSet = new Set(commits.map((c) => c.authorName));
+  const authors = Array.from(authorsSet).sort((a, b) => a.localeCompare(b));
+
+  return {
+    stats: {
+      commitCount: commits.length,
+      authorCount: authors.length,
+      dateRange: {
+        from: new Date(dates[0]).toISOString(),
+        to: new Date(dates[dates.length - 1]).toISOString(),
+      },
+    },
+    authors,
+    commits,
+    warnings,
+  };
+}
+
 normalizeRouter.post(
   "/normalize/gitlog",
   asyncHandler(async (require, res) => {
@@ -165,59 +218,11 @@ normalizeRouter.post(
       throw new HttpError(400, "Invalid request body", parsed.error.flatten());
     }
 
-    const rawText = parsed.data.text;
-
-    // Simple normalization: trime and drop empty lines
-    const lines = rawText
-      .split("\n")
-      .map((l) => l.trimEnd())
-      .filter((l) => l.trim().length > 0);
-
-    if (lines.length === 0) {
-      throw new HttpError(400, "No parsable lines found");
-    }
-
-    const warnings: Array<{
-      lineNumber: number;
-      reason: string;
-      line: string;
-    }> = [];
-    const commits: any[] = [];
-
-    for (let idx = 0; idx < lines.length; idx++) {
-      const lineNumber = idx + 1;
-      const result = parseGitLogLine(lines[idx], lineNumber);
-      if (!result.ok) warnings.push(result.warning);
-      else commits.push(result.commit);
-    }
-
-    if (commits.length === 0) {
-      throw new HttpError(422, "Unalbe to parse any commits", {
-        warnings: warnings.slice(0, 20),
-      });
-    }
-
-    const dates = commits
-      .map((c) => new Date(c.dateIso).getTime())
-      .sort((a, b) => a - b);
-    const authorsSet = new Set(commits.map((c) => c.authorName));
-    const authors = Array.from(authorsSet).sort((a, b) => a.localeCompare(b));
+    const normalized = normalizeGitLogText(parsed.data.text);
 
     res.json({
       ok: true,
-      data: {
-        stats: {
-          commitCount: commits.length,
-          authorCount: authors.length,
-          dateRange: {
-            from: new Date(dates[0]).toISOString(),
-            to: new Date(dates[dates.length - 1]).toISOString(),
-          },
-        },
-        authors,
-        commits,
-        warnings,
-      },
+      data: normalized,
     });
   })
 );

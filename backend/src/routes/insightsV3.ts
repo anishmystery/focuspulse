@@ -407,6 +407,225 @@ function enforceHypothesisRules(hypotheses, keyMetrics) {
 export const insightsV3Router = Router();
 const llm = new OllamaClient();
 
+export async function generateInsightsV3FromCommits(input: z.infer<typeof BodySchema>) {
+  const { authors, commits, focusAuthor, maxSubjects } = input;
+  const uniqueAuthors = Array.from(new Set(authors)).sort((a, b) =>
+    a.localeCompare(b),
+  );
+
+  const focus = uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
+
+  if (uniqueAuthors.length > 1 && !focus) {
+    throw new HttpError(
+      400,
+      "focusAuthor is required when multiple authors are present",
+      { authors: uniqueAuthors },
+    );
+  }
+
+  const facts = computeFacts(commits, focus!, uniqueAuthors);
+  const maxForLLM = facts.dataQuality === "high" ? 60 : 30;
+  const subjects = pickSubjects(
+    commits,
+    focus!,
+    Math.min(maxSubjects ?? 60, maxForLLM),
+  );
+  const lowSignal = subjects.length < 5;
+
+  const keyMetrics = {
+    commitCount: facts.totals.commits,
+    activeDays: facts.totals.activeDays,
+    weekendPercent: facts.rhythm.weekendPercent,
+    lateNightPercent: facts.rhythm.lateNightPercent,
+    longestStreakDays: facts.consistency.longestStreakDays,
+    longestGapDays: facts.consistency.longestGapDays,
+    burstiness: facts.consistency.burstiness,
+    workTypeMix: facts.workTypeMix.map((t) => ({
+      type: t.type,
+      percent: t.percent,
+    })),
+    conventionalPercent: facts.messageQuality.conventionalPercent,
+    ticketPercent: facts.messageQuality.ticketPercent,
+  };
+
+  const system = `
+  You are FocusPulse.
+  Return ONLY valid JSON. No markdown. No explanations. No extra keys.
+  Use double quotes for all JSON strings.
+  If you cannot comply, return an empty array for the requested list.
+  `.trim();
+
+  const themesPrompt = `
+  ${system}
+
+  Task: Group the commit subjects into 1-4 themes.
+
+  Return JSON exactly:
+  {"themes":[{"theme":"...","evidenceSubjects":["..."]}]}
+
+  Rules:
+  - Use ONLY the provided subjects.
+  - theme: 2-5 words, Title Case, topic-oriented.
+  - evidenceSubjects: 2-6 UNIQUE subjects copied verbatim from the subjects list.
+  - Do not invent subjects. Do not include numbers. Do not include confidence.
+
+  Subjects:
+  ${JSON.stringify(subjects)}
+  `.trim();
+
+  const hypothesesPrompt = `
+  ${system}
+
+  Task: Write 0-3 hypotheses about global work patterns using ONLY keyMetrics.
+
+  Return JSON exactly:
+  {"hypotheses":[{"statement":"...","reason":"..."}]}
+
+  Rules (metric-only, global patterns only):
+  - statement MUST start with exactly one of:
+    - "Might indicate ..."
+    - "Might reflect ..."
+    - "Might suggest ..."
+  - statement must talk ONLY about global patterns (cadence, consistency, work type mix, message hygiene).
+  - statement must NOT mention any topic words/scopes like "API", "UI", "auth", "build", or any scope-like words from subjects.
+  - reason must cite at least ONE metric using exact key names, e.g.:
+    "keyMetrics.weekendPercent is 23.1%"
+  - The metric cited in "reason" must match the statement:
+    - weekendPercent -> weekend work pattern
+    - lateNightPercent -> late-night work pattern
+    - longestGapDays/longestStreakDays/burstiness -> gaps/streaks/bursts/consistence
+    - workTypeMix -> balance/mix of feat/fix/refactor/ci/build
+    - conventionalPercent/ticketPercent -> message hygiene/tickets
+
+  keyMetrics:
+  ${JSON.stringify(keyMetrics)}
+  `.trim();
+
+  const recommendationsPrompt = `
+  ${system}
+
+  Task: Write 0-3 actionable recommendations based ONLY on keyMetrics.
+
+  Return JSON exactly:
+  {"recommendations":[{"action":"...","why":"..."}]}
+
+  Hard rules:
+  - Global only (no repo topics like API/UI/auth/build).
+  - action must be concise (3-10 words), imperative verb first.
+  - why MUST cite EXACTLY ONE metric in this format:
+    "keyMetrics.<field> is <value>"
+  - why must NOT contain operators or logic words: no ">", "<", ">=", "<=", "OR", "AND".
+  - Do not invent values. Copy values from keyMetrics.
+
+  Allowed recommendation types (choose from these only):
+  1) "Add ticket IDs to commits" (only if keyMetrics.ticketPercent is 0)
+  2) "Reduce late-night commit concentration" (only if keyMetrics.lateNightPercent is 20 or higher)
+  3) "Reduce weekend commit concentration" (only if keyMetrics.weekendPercent is 25 or higher)
+  4) "Balance work types across commits" (only if the top workTypeMix percent is 60 or higher)
+  5) "Improve commit message conventions" (only if keyMetrics.conventionalPercent is below 95)
+
+  If none apply, return {"recommendations":[]}.
+
+  keyMetrics:
+  ${JSON.stringify(keyMetrics)}
+  `.trim();
+
+  let narrativeCandidate: any;
+
+  if (lowSignal) {
+    narrativeCandidate = buildLowSignalNarrative(facts);
+  } else {
+    const unwrap = (x: any) =>
+      x && typeof x === "object" && "data" in x ? (x as any).data : x;
+
+    const themesRaw = unwrap(await llm.generateJson<unknown>(themesPrompt));
+    const hypothesesRaw = unwrap(await llm.generateJson<unknown>(hypothesesPrompt));
+    const recommendationsRaw = unwrap(await llm.generateJson<unknown>(recommendationsPrompt));
+
+    narrativeCandidate = {
+      themes:
+        themesRaw && typeof themesRaw === "object" && "themes" in themesRaw
+          ? (themesRaw as any).themes
+          : [],
+      hypotheses:
+        hypothesesRaw && typeof hypothesesRaw === "object" && "hypotheses" in hypothesesRaw
+          ? (hypothesesRaw as any).hypotheses
+          : [],
+      recommendations:
+        recommendationsRaw && typeof recommendationsRaw === "object" && "recommendations" in recommendationsRaw
+          ? (recommendationsRaw as any).recommendations
+          : [],
+      watchouts: [],
+      summary: "",
+    };
+  }
+
+  if (!Array.isArray(narrativeCandidate.themes)) narrativeCandidate.themes = [];
+  if (!Array.isArray(narrativeCandidate.hypotheses)) narrativeCandidate.hypotheses = [];
+  if (!Array.isArray(narrativeCandidate.recommendations)) narrativeCandidate.recommendations = [];
+  if (!Array.isArray(narrativeCandidate.watchouts)) narrativeCandidate.watchouts = [];
+
+  if (lowSignal) {
+    narrativeCandidate.themes = [];
+    narrativeCandidate.hypotheses = [];
+  }
+
+  narrativeCandidate.watchouts = buildDeterministicWatchouts(keyMetrics);
+  narrativeCandidate.summary = buildDeterministicSummary(
+    facts.dateRange,
+    keyMetrics,
+    focus!,
+  );
+
+  const narrativeSafe = sanitizeNarrative(narrativeCandidate);
+  narrativeSafe.recommendations = enforceRecommendationRules(
+    narrativeSafe.recommendations,
+    keyMetrics,
+  );
+  narrativeSafe.hypotheses = enforceHypothesisRules(
+    narrativeSafe.hypotheses,
+    keyMetrics,
+  );
+
+  if (Array.isArray(narrativeSafe?.themes)) {
+    narrativeSafe.themes = narrativeSafe.themes.map((t: any) => {
+      if (!Array.isArray(t?.evidenceSubjects)) return t;
+      const uniq = Array.from(new Set(t.evidenceSubjects));
+      return { ...t, evidenceSubjects: uniq.slice(0, 6) };
+    });
+  }
+
+  if (Array.isArray(narrativeSafe.themes)) {
+    narrativeSafe.themes = narrativeSafe.themes
+      .map((t: any) => ({
+        ...t,
+        evidenceSubjects: Array.isArray(t.evidenceSubjects)
+          ? t.evidenceSubjects
+          : [],
+      }))
+      .sort(
+        (a: any, b: any) =>
+          (b.evidenceSubjects.length ?? 0) - (a.evidenceSubjects.length ?? 0),
+      )
+      .slice(0, 6);
+  }
+
+  const narrativeParsed = InsightsV2NarrativeSchema.safeParse(narrativeSafe);
+  if (!narrativeParsed.success) {
+    throw new HttpError(
+      502,
+      "Narrative JSON failed validation",
+      narrativeParsed.error.flatten(),
+    );
+  }
+
+  return {
+    ...narrativeParsed.data,
+    modules: facts,
+    dataQuality: facts.dataQuality,
+  };
+}
+
 insightsV3Router.post(
   "/insights/v3/from-commits",
   asyncHandler(async (req, res) => {
@@ -415,262 +634,11 @@ insightsV3Router.post(
       throw new HttpError(400, "Invalid request body", parsed.error.flatten());
     }
 
-    const { authors, commits, focusAuthor, maxSubjects } = parsed.data;
-    const uniqueAuthors = Array.from(new Set(authors)).sort((a, b) =>
-      a.localeCompare(b),
-    );
-
-    const focus =
-      uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
-
-    if (uniqueAuthors.length > 1 && !focus) {
-      throw new HttpError(
-        400,
-        "focusAuthor is required when multiple authors are present",
-        {
-          authors: uniqueAuthors,
-        },
-      );
-    }
-
-    const facts = computeFacts(commits, focus!, uniqueAuthors);
-    const maxForLLM = facts.dataQuality === "high" ? 60 : 30;
-    const subjects = pickSubjects(
-      commits,
-      focus!,
-      Math.min(maxSubjects ?? 60, maxForLLM),
-    );
-    const lowSignal = subjects.length < 5;
-
-    const keyMetrics = {
-      commitCount: facts.totals.commits,
-      activeDays: facts.totals.activeDays,
-      weekendPercent: facts.rhythm.weekendPercent,
-      lateNightPercent: facts.rhythm.lateNightPercent,
-      longestStreakDays: facts.consistency.longestStreakDays,
-      longestGapDays: facts.consistency.longestGapDays,
-      burstiness: facts.consistency.burstiness,
-      workTypeMix: facts.workTypeMix.map((t) => ({
-        type: t.type,
-        percent: t.percent,
-      })),
-      conventionalPercent: facts.messageQuality.conventionalPercent,
-      ticketPercent: facts.messageQuality.ticketPercent,
-    };
-
-    const system = `
-    You are FocusPulse.
-    Return ONLY valid JSON. No markdown. No explanations. No extra keys.
-    Use double quotes for all JSON strings.
-    If you cannot comply, return an empty array for the requested list.
-    `.trim();
-
-    const themesPrompt = `
-    ${system}
-
-    Task: Group the commit subjects into 1-4 themes.
-
-    Return JSON exactly:
-    {"themes":[{"theme":"...","evidenceSubjects":["..."]}]}
-
-    Rules:
-    - Use ONLY the provided subjects.
-    - theme: 2-5 words, Title Case, topic-oriented.
-    - evidenceSubjects: 2-6 UNIQUE subjects copied verbatim from the subjects list.
-    - Do not invent subjects. Do not include numbers. Do not include confidence.
-
-    Subjects:
-    ${JSON.stringify(subjects)}
-    `.trim();
-
-    const hypothesesPrompt = `
-    ${system}
-
-    Task: Write 0-3 hypotheses about global work patterns using ONLY keyMetrics.
-
-    Return JSON exactly:
-    {"hypotheses":[{"statement":"...","reason":"..."}]}
-
-    Rules (metric-only, global patterns only):
-    - statement MUST start with exactly one of:
-      - "Might indicate ..."
-      - "Might reflect ..."
-      - "Might suggest ..."
-    - statement must talk ONLY about global patterns (cadence, consistency, work type mix, message hygiene).
-    - statement must NOT mention any topic words/scopes like "API", "UI", "auth", "build", or any scope-like words from subjects.
-    - reason must cite at least ONE metric using exact key names, e.g.:
-      "keyMetrics.weekendPercent is 23.1%"
-    - The metric cited in "reason" must match the statement:
-      - weekendPercent -> weekend work pattern
-      - lateNightPercent -> late-night work pattern
-      - longestGapDays/longestStreakDays/burstiness -> gaps/streaks/bursts/consistence
-      - workTypeMix -> balance/mix of feat/fix/refactor/ci/build
-      - conventionalPercent/ticketPercent -> message hygiene/tickets
-
-    keyMetrics:
-    ${JSON.stringify(keyMetrics)}
-    `.trim();
-
-    const recommendationsPrompt = `
-    ${system}
-
-    Task: Write 0-3 actionable recommendations based ONLY on keyMetrics.
-
-    Return JSON exactly:
-    {"recommendations":[{"action":"...","why":"..."}]}
-
-    Hard rules:
-    - Global only (no repo topics like API/UI/auth/build).
-    - action must be concise (3-10 words), imperative verb first.
-    - why MUST cite EXACTLY ONE metric in this format:
-      "keyMetrics.<field> is <value>"
-    - why must NOT contain operators or logic words: no ">", "<", ">=", "<=", "OR", "AND".
-    - Do not invent values. Copy values from keyMetrics.
-
-    Allowed recommendation types (choose from these only):
-    1) "Add ticket IDs to commits" (only if keyMetrics.ticketPercent is 0)
-    2) "Reduce late-night commit concentration" (only if keyMetrics.lateNightPercent is 20 or higher)
-    3) "Reduce weekend commit concentration" (only if keyMetrics.weekendPercent is 25 or higher)
-    4) "Balance work types across commits" (only if the top workTypeMix percent is 60 or higher)
-    5) "Improve commit message conventions" (only if keyMetrics.conventionalPercent is below 95)
-
-    If none apply, return {"recommendations":[]}.
-
-    keyMetrics:
-    ${JSON.stringify(keyMetrics)}
-    `.trim();
-
-    let narrativeCandidate: any;
-
-    if (lowSignal) {
-      narrativeCandidate = buildLowSignalNarrative(facts);
-    } else {
-      const unwrap = (x: any) =>
-        x && typeof x === "object" && "data" in x ? (x as any).data : x;
-
-      const themesRaw = unwrap(await llm.generateJson<unknown>(themesPrompt));
-      const hypothesesRaw = unwrap(
-        await llm.generateJson<unknown>(hypothesesPrompt),
-      );
-      const recommendationsRaw = unwrap(
-        await llm.generateJson<unknown>(recommendationsPrompt),
-      );
-
-      narrativeCandidate = {
-        themes:
-          themesRaw && typeof themesRaw === "object" && "themes" in themesRaw
-            ? (themesRaw as any).themes
-            : [],
-        hypotheses:
-          hypothesesRaw &&
-          typeof hypothesesRaw === "object" &&
-          "hypotheses" in hypothesesRaw
-            ? (hypothesesRaw as any).hypotheses
-            : [],
-        recommendations:
-          recommendationsRaw &&
-          typeof recommendationsRaw === "object" &&
-          "recommendations" in recommendationsRaw
-            ? (recommendationsRaw as any).recommendations
-            : [],
-        watchouts: [],
-        summary: "",
-      };
-    }
-
-    if (!Array.isArray(narrativeCandidate.themes))
-      narrativeCandidate.themes = [];
-    if (!Array.isArray(narrativeCandidate.hypotheses))
-      narrativeCandidate.hypotheses = [];
-    if (!Array.isArray(narrativeCandidate.recommendations))
-      narrativeCandidate.recommendations = [];
-    if (!Array.isArray(narrativeCandidate.watchouts))
-      narrativeCandidate.watchouts = [];
-
-    // If lowSignal, enforce empty themes/hypotheses even if something slipped in
-    if (lowSignal) {
-      narrativeCandidate.themes = [];
-      narrativeCandidate.hypotheses = [];
-    }
-
-    narrativeCandidate.watchouts = buildDeterministicWatchouts(keyMetrics);
-    narrativeCandidate.summary = buildDeterministicSummary(
-      facts.dateRange,
-      keyMetrics,
-      focusAuthor,
-    );
-    // narrativeCandidate.hypotheses = (narrativeCandidate.hypotheses ?? []).map(
-    //   (h: { reason: string | string[] }) => {
-    //     if (h?.reason?.includes("keyMetrics.workTypeMix")) {
-    //       return {
-    //         statement: "Might reflect a varied work-type mix across commits.",
-    //         reason: h.reason,
-    //       };
-    //     }
-    //     return h;
-    //   },
-    // );
-    // narrativeCandidate.themes = (narrativeCandidate.themes ?? []).filter(
-    //   (t: { evidenceSubjects: string | any[] }) =>
-    //     (t?.evidenceSubjects.length ?? 0) >= 2,
-    // );
-
-    const narrativeSafe = sanitizeNarrative(narrativeCandidate);
-
-    // Deterministically filter out recommendations that break the set rules
-    narrativeSafe.recommendations = enforceRecommendationRules(
-      narrativeSafe.recommendations,
-      keyMetrics,
-    );
-
-    // Deterministically filter out hypothesis that break the set rules
-    narrativeSafe.hypotheses = enforceHypothesisRules(
-      narrativeSafe.hypotheses,
-      keyMetrics,
-    );
-
-    // Deduplicate evidenceSubjects per theme
-    if (Array.isArray(narrativeSafe?.themes)) {
-      narrativeSafe.themes = narrativeSafe.themes.map((t: any) => {
-        if (!Array.isArray(t?.evidenceSubjects)) return t;
-        const uniq = Array.from(new Set(t.evidenceSubjects));
-        return { ...t, evidenceSubjects: uniq.slice(0, 6) };
-      });
-    }
-
-    // Deterministically cap the best 6 themes
-    if (Array.isArray(narrativeSafe.themes)) {
-      narrativeSafe.themes = narrativeSafe.themes
-        .map((t: any) => ({
-          ...t,
-          evidenceSubjects: Array.isArray(t.evidenceSubjects)
-            ? t.evidenceSubjects
-            : [],
-        }))
-        .sort(
-          (a: any, b: any) =>
-            (b.evidenceSubjects.length ?? 0) - (a.evidenceSubjects.length ?? 0),
-        )
-        .slice(0, 6);
-    }
-
-    const narrativeParsed = InsightsV2NarrativeSchema.safeParse(narrativeSafe);
-
-    if (!narrativeParsed.success) {
-      throw new HttpError(
-        502,
-        "Narrative JSON failed validation",
-        narrativeParsed.error.flatten(),
-      );
-    }
+    const data = await generateInsightsV3FromCommits(parsed.data);
 
     res.json({
       ok: true,
-      data: {
-        ...narrativeParsed.data,
-        modules: facts,
-        dataQuality: facts.dataQuality,
-      },
+      data,
     });
   }),
 );
