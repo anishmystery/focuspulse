@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
-import { asyncHandler } from "../utils/asyncHandler";
-import { HttpError } from "../utils/httpError";
-import { OllamaClient } from "../services/llm/ollamaClient";
+import { asyncHandler } from "../../utils/asyncHandler";
+import { HttpError } from "../../utils/httpError";
+import { OllamaClient } from "../../services/llm/ollamaClient";
 
 export const insightsV1Router = Router();
 
@@ -47,7 +47,7 @@ export function percentile(sorted: number[], p: number): number {
 function computeInsights(
   commitsAll: Commit[],
   focusAuthor: string,
-  allAuthors: string[]
+  allAuthors: string[],
 ) {
   const commits = commitsAll.filter((c) => c.authorName === focusAuthor);
   if (commits.length === 0) {
@@ -209,13 +209,13 @@ function computeInsights(
     dayKeys.length < 7 || total < 20
       ? "low"
       : dayKeys.length < 21 || total < 75
-      ? "medium"
-      : "high";
+        ? "medium"
+        : "high";
 
   const dataNotes: string[] = [];
   if (dataQuality === "low") {
     dataNotes.push(
-      "Small sample size: treat insights as early signals, not strong conclusions."
+      "Small sample size: treat insights as early signals, not strong conclusions.",
     );
     dataNotes.push("Avoid claims about consistency, burnout, or trends.");
   }
@@ -270,7 +270,7 @@ insightsV1Router.post(
     const { authors, commits, focusAuthor } = parsed.data;
 
     const uniqueAuthors = Array.from(new Set(authors)).sort((a, b) =>
-      a.localeCompare(b)
+      a.localeCompare(b),
     );
     const focus =
       uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
@@ -279,7 +279,7 @@ insightsV1Router.post(
       throw new HttpError(
         400,
         "focusAuthor is requred when multiple authors are present",
-        { authors: uniqueAuthors }
+        { authors: uniqueAuthors },
       );
     }
 
@@ -321,7 +321,7 @@ insightsV1Router.post(
           - Tickets: you may only say "no ticket IDs detected in commit messages" if ticketPercent = 0. Do not claim tickets were opened/closed.
           `
         : computed.dataQuality === "medium"
-        ? `
+          ? `
           Data quality is MEDIUM.
           Rules:
           - Phrase conclusions cautiously (use "suggests", "may indicate").
@@ -332,7 +332,7 @@ insightsV1Router.post(
           - Do NOT use the word "team" unless authorCount > 1 AND teamContext is not null.
           - Tickets: you may only say "no ticket IDs detected in commit messages" if ticketPercent = 0. Do not claim tickets were opened/closed.
           `
-        : `
+          : `
           Data quality is HIGH.
           Rules:
           - Highlights must reference concrete numbers from the data.
@@ -375,7 +375,7 @@ insightsV1Router.post(
       throw new HttpError(
         502,
         "LLM returned invalid narrative JSON",
-        narrativeParsed.error.flatten()
+        narrativeParsed.error.flatten(),
       );
     }
 
@@ -386,5 +386,5 @@ insightsV1Router.post(
         modules: computed,
       },
     });
-  })
+  }),
 );

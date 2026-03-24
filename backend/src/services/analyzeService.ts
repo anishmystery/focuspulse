@@ -1,7 +1,7 @@
 import { env } from "../config";
 import { HttpError } from "../utils/httpError";
-import { normalizeGitLogText } from "../routes/normalize";
-import { generateInsightsV3FromCommits } from "../routes/insightsV3";
+import { normalizeGitLogText } from "../routes/internal/normalize";
+import { generateInsightsV3FromCommits } from "../routes/internal/insightsV3";
 import {
   AnalyzeSuccessResponseSchema,
   type AnalyzeErrorCode,

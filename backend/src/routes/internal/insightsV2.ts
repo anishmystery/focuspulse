@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { Router } from "express";
-import { OllamaClient } from "../services/llm/ollamaClient";
-import { HttpError } from "../utils/httpError";
+import { OllamaClient } from "../../services/llm/ollamaClient";
+import { HttpError } from "../../utils/httpError";
 import { CommitSchema, dateKeyUTC, percentile } from "./insightsV1";
-import { asyncHandler } from "../utils/asyncHandler";
+import { asyncHandler } from "../../utils/asyncHandler";
 
 export const ThemeSchema = z.object({
   theme: z.string().min(2),

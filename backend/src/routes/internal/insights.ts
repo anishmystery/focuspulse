@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
-import { OllamaClient } from "../services/llm/ollamaClient";
-import { HttpError } from "../utils/httpError";
-import { asyncHandler } from "../utils/asyncHandler";
+import { OllamaClient } from "../../services/llm/ollamaClient";
+import { HttpError } from "../../utils/httpError";
+import { asyncHandler } from "../../utils/asyncHandler";
 
 export const insightsRouter = Router();
 
@@ -55,10 +55,10 @@ insightsRouter.post(
       throw new HttpError(
         502,
         "LLM returned invalid JSON shape",
-        validated.error.flatten()
+        validated.error.flatten(),
       );
     }
 
     res.json({ ok: true, data: validated.data });
-  })
+  }),
 );

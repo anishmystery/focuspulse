@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { Router } from "express";
-import { OllamaClient } from "../services/llm/ollamaClient";
-import { HttpError } from "../utils/httpError";
+import { OllamaClient } from "../../services/llm/ollamaClient";
+import { HttpError } from "../../utils/httpError";
 import { CommitSchema, dateKeyUTC, percentile } from "./insightsV1";
-import { asyncHandler } from "../utils/asyncHandler";
+import { asyncHandler } from "../../utils/asyncHandler";
 import {
   InsightsV2NarrativeSchema,
   computeFacts,
@@ -407,13 +407,16 @@ function enforceHypothesisRules(hypotheses, keyMetrics) {
 export const insightsV3Router = Router();
 const llm = new OllamaClient();
 
-export async function generateInsightsV3FromCommits(input: z.infer<typeof BodySchema>) {
+export async function generateInsightsV3FromCommits(
+  input: z.infer<typeof BodySchema>,
+) {
   const { authors, commits, focusAuthor, maxSubjects } = input;
   const uniqueAuthors = Array.from(new Set(authors)).sort((a, b) =>
     a.localeCompare(b),
   );
 
-  const focus = uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
+  const focus =
+    uniqueAuthors.length === 1 ? uniqueAuthors[0] : focusAuthor?.trim();
 
   if (uniqueAuthors.length > 1 && !focus) {
     throw new HttpError(
@@ -539,8 +542,12 @@ export async function generateInsightsV3FromCommits(input: z.infer<typeof BodySc
       x && typeof x === "object" && "data" in x ? (x as any).data : x;
 
     const themesRaw = unwrap(await llm.generateJson<unknown>(themesPrompt));
-    const hypothesesRaw = unwrap(await llm.generateJson<unknown>(hypothesesPrompt));
-    const recommendationsRaw = unwrap(await llm.generateJson<unknown>(recommendationsPrompt));
+    const hypothesesRaw = unwrap(
+      await llm.generateJson<unknown>(hypothesesPrompt),
+    );
+    const recommendationsRaw = unwrap(
+      await llm.generateJson<unknown>(recommendationsPrompt),
+    );
 
     narrativeCandidate = {
       themes:
@@ -548,11 +555,15 @@ export async function generateInsightsV3FromCommits(input: z.infer<typeof BodySc
           ? (themesRaw as any).themes
           : [],
       hypotheses:
-        hypothesesRaw && typeof hypothesesRaw === "object" && "hypotheses" in hypothesesRaw
+        hypothesesRaw &&
+        typeof hypothesesRaw === "object" &&
+        "hypotheses" in hypothesesRaw
           ? (hypothesesRaw as any).hypotheses
           : [],
       recommendations:
-        recommendationsRaw && typeof recommendationsRaw === "object" && "recommendations" in recommendationsRaw
+        recommendationsRaw &&
+        typeof recommendationsRaw === "object" &&
+        "recommendations" in recommendationsRaw
           ? (recommendationsRaw as any).recommendations
           : [],
       watchouts: [],
@@ -561,9 +572,12 @@ export async function generateInsightsV3FromCommits(input: z.infer<typeof BodySc
   }
 
   if (!Array.isArray(narrativeCandidate.themes)) narrativeCandidate.themes = [];
-  if (!Array.isArray(narrativeCandidate.hypotheses)) narrativeCandidate.hypotheses = [];
-  if (!Array.isArray(narrativeCandidate.recommendations)) narrativeCandidate.recommendations = [];
-  if (!Array.isArray(narrativeCandidate.watchouts)) narrativeCandidate.watchouts = [];
+  if (!Array.isArray(narrativeCandidate.hypotheses))
+    narrativeCandidate.hypotheses = [];
+  if (!Array.isArray(narrativeCandidate.recommendations))
+    narrativeCandidate.recommendations = [];
+  if (!Array.isArray(narrativeCandidate.watchouts))
+    narrativeCandidate.watchouts = [];
 
   if (lowSignal) {
     narrativeCandidate.themes = [];

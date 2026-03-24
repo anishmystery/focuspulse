@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { HttpError } from "../utils/httpError";
-import { asyncHandler } from "../utils/asyncHandler";
+import { HttpError } from "../../utils/httpError";
+import { asyncHandler } from "../../utils/asyncHandler";
 
 export const normalizeRouter = Router();
 
@@ -36,7 +36,7 @@ export function classifySubject(subject: string): {
 
   // Conventional commits like: feat(auth): ...
   const conventional = s.match(
-    /^(feat|fix|refactor|docs|chore|test\ci\perf\style\build)(\(.+\))?:\s+/i
+    /^(feat|fix|refactor|docs|chore|test\ci\perf\style\build)(\(.+\))?:\s+/i,
   );
   const tags: string[] = [];
 
@@ -157,7 +157,6 @@ export function parseGitLogLine(line: string, lineNumber: number) {
   };
 }
 
-
 export function normalizeGitLogText(rawText: string) {
   // Simple normalization: trim and drop empty lines
   const lines = rawText
@@ -224,5 +223,5 @@ normalizeRouter.post(
       ok: true,
       data: normalized,
     });
-  })
+  }),
 );

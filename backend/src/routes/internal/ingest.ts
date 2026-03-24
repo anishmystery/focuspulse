@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
-import { env } from "../config";
-import { HttpError } from "../utils/httpError";
-import { asyncHandler } from "../utils/asyncHandler";
+import { env } from "../../config";
+import { HttpError } from "../../utils/httpError";
+import { asyncHandler } from "../../utils/asyncHandler";
 
 export const ingestRouter = Router();
 
@@ -47,5 +47,5 @@ ingestRouter.post(
         },
       },
     });
-  })
+  }),
 );
