@@ -14,7 +14,7 @@ export const AnalyzeErrorCodeSchema = z.enum([
 export const AnalyzeRequestBodySchema = z.object({
   text: z.string().min(1),
   focusAuthor: z.string().min(1).optional(),
-  source: z.string("git-log").optional(),
+  source: z.literal("git-log").optional(),
   debug: z.boolean().optional(),
 });
 
@@ -51,7 +51,7 @@ export const AnalyzeMetaSchema = z.object({
   signal: z.enum(["low", "medium", "high"]),
   warnings: z.array(z.string()),
   version: z.string(),
-  source: z.string("git-log"),
+  source: z.literal("git-log"),
 });
 
 export const AnalyzeDebugSchema = z.object({
