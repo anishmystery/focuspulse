@@ -55,19 +55,29 @@ export const AnalyzeMetaSchema = z.object({
 });
 
 export const AnalyzeDebugSchema = z.object({
-  normalization: z.object({
-    authorCount: z.number().int().nonnegative(),
-    parsedCommitCount: z.number().int().nonnegative(),
-    excludedMergeCommitCount: z.number().int().nonnegative(),
-    analyzedCommitCount: z.number().int().nonnegative(),
-    droppedLineCount: z.number().int().nonnegative(),
-    warnings: z.array(NormalizeWarningSchema),
-  }),
-  pipeline: z.object({
-    route: z.literal("analyze"),
-    insightsVersion: z.literal("v3"),
-    usedFocusAuthor: z.string(),
-  }),
+  normalization: z
+    .object({
+      authorCount: z.number().int().nonnegative(),
+      parsedCommitCount: z.number().int().nonnegative(),
+      excludedMergeCommitCount: z.number().int().nonnegative(),
+      analyzedCommitCount: z.number().int().nonnegative(),
+      droppedLineCount: z.number().int().nonnegative(),
+      warnings: z.array(NormalizeWarningSchema),
+    })
+    .optional(),
+  pipeline: z
+    .object({
+      route: z.literal("analyze"),
+      insightsVersion: z.literal("v3"),
+      usedFocusAuthor: z.string(),
+    })
+    .optional(),
+  cache: z
+    .object({
+      hit: z.boolean(),
+      fingerprint: z.string(),
+    })
+    .optional(),
 });
 
 export const AnalyzeResultSchema = z.object({

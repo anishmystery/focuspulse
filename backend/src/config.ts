@@ -10,3 +10,10 @@ const EnvSchema = z.object({
 });
 
 export const env = EnvSchema.parse(process.env);
+
+export const ANALYSIS_VERSIONS = {
+  pipeline: "analyze-v1",
+  insights: "v3",
+  prompt: "v3.0",
+  model: env.OLLAMA_MODEL,
+} as const;

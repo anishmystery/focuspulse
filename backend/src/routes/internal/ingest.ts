@@ -13,8 +13,8 @@ const IngestGitLogBody = z.object({
 
 ingestRouter.post(
   "/ingest/gitlog",
-  asyncHandler(async (require, res) => {
-    const parsed = IngestGitLogBody.safeParse(require.body);
+  asyncHandler(async (req, res) => {
+    const parsed = IngestGitLogBody.safeParse(req.body);
     if (!parsed.success) {
       throw new HttpError(400, "Invalid request body", parsed.error.flatten());
     }

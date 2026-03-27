@@ -6,7 +6,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 export const normalizeRouter = Router();
 
 const NormalizeGitLogBody = z.object({
-  source: z.literal("git-log-v1"),
+  source: z.literal("git-log"),
   text: z.string().min(1),
 });
 
@@ -36,7 +36,7 @@ export function classifySubject(subject: string): {
 
   // Conventional commits like: feat(auth): ...
   const conventional = s.match(
-    /^(feat|fix|refactor|docs|chore|test\ci\perf\style\build)(\(.+\))?:\s+/i,
+    /^(feat|fix|refactor|docs|chore|test|ci|perf|style|build)(\(.+\))?:\s+/i,
   );
   const tags: string[] = [];
 

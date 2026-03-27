@@ -7,6 +7,12 @@ import {
   type AnalyzeErrorCode,
   type AnalyzeSuccessResponse,
 } from "../contracts/analyzeContracts";
+import { fingerprintAnalysis } from "../utils/fingerprintAnalysis";
+import {
+  findCachedAnalysisByFingerprint,
+  saveCachedAnalysis,
+  touchCachedAnalysisAccess,
+} from "../repositories/analysisCacheRepository";
 
 type RunAnalyzeInput = {
   text: string;
@@ -87,6 +93,33 @@ function remapInsightsError(err: unknown): never {
   throw err;
 }
 
+function attachCacheDebug(
+  response: AnalyzeSuccessResponse,
+  input: {
+    debug: boolean;
+    cacheHit: boolean;
+    fingerprint: string;
+  },
+): AnalyzeSuccessResponse {
+  if (!input.debug) {
+    return response;
+  }
+
+  return {
+    ...response,
+    data: {
+      ...response.data,
+      debug: {
+        ...(response.data.debug ?? {}),
+        cache: {
+          hit: input.cacheHit,
+          fingerprint: input.fingerprint,
+        },
+      },
+    },
+  };
+}
+
 export async function runAnalyze(
   input: RunAnalyzeInput,
 ): Promise<AnalyzeSuccessResponse> {
@@ -151,6 +184,36 @@ export async function runAnalyze(
     );
   }
 
+  const usedFocusAuthor =
+    authorsDetected.length === 1 ? authorsDetected[0] : focusAuthor!;
+
+  const fingerprint = fingerprintAnalysis({
+    commits: analyzableCommits.map((commit) => ({
+      sha: commit.hash,
+      author: commit.authorName,
+      authoredAt: commit.dateIso,
+      subject: commit.subject,
+    })),
+    focusAuthor: usedFocusAuthor,
+    source,
+    pipelineVersion: "analyze-v1",
+    insightsVersion: "v3",
+    model: "llama3.2:3b",
+    promptVersion: "v3.0",
+  });
+
+  const cached = await findCachedAnalysisByFingerprint(fingerprint);
+
+  if (cached) {
+    await touchCachedAnalysisAccess(cached.id);
+
+    return attachCacheDebug(cached.response, {
+      debug,
+      cacheHit: true,
+      fingerprint,
+    });
+  }
+
   let insights: Awaited<ReturnType<typeof generateInsightsV3FromCommits>>;
   try {
     insights = await generateInsightsV3FromCommits({
@@ -161,9 +224,6 @@ export async function runAnalyze(
   } catch (err) {
     remapInsightsError(err);
   }
-
-  const usedFocusAuthor =
-    authorsDetected.length === 1 ? authorsDetected[0] : focusAuthor!;
 
   const response = {
     ok: true as const,
@@ -227,5 +287,26 @@ export async function runAnalyze(
     );
   }
 
-  return validated.data;
+  await saveCachedAnalysis({
+    fingerprint,
+    focusAuthor: usedFocusAuthor,
+    source,
+    pipelineVersion: "analyze-v1",
+    insightsVersion: "v3",
+    model: "llama3.2:3b",
+    promptVersion: "v3.0",
+    response: validated.data,
+    metrics: {
+      commitCount: validated.data.data.meta.commitCount,
+      activeDays: validated.data.data.meta.activeDays,
+      signal: validated.data.data.meta.signal,
+      dateRange: validated.data.data.meta.dateRange,
+    },
+  });
+
+  return attachCacheDebug(validated.data, {
+    debug,
+    cacheHit: false,
+    fingerprint,
+  });
 }
