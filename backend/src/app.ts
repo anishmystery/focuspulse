@@ -3,6 +3,7 @@ import cors from "cors";
 import { healthRouter } from "./routes/health";
 import { errorHandler } from "./middlewares/errorHandler";
 import { analyzeRouter } from "./routes/analyze";
+import { analysisHistoryRouter } from "./routes/analysisHistory";
 
 export const app = express();
 
@@ -11,5 +12,6 @@ app.use(express.json());
 
 app.use(healthRouter);
 app.use(analyzeRouter);
+app.use(analysisHistoryRouter);
 
 app.use(errorHandler);

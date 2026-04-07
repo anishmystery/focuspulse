@@ -7,12 +7,16 @@ import {
   type AnalyzeErrorCode,
   type AnalyzeSuccessResponse,
 } from "../contracts/analyzeContracts";
-import { fingerprintAnalysis } from "../utils/fingerprintAnalysis";
+import {
+  fingerprintAnalysis,
+  fingerprintAnalysisContent,
+} from "../utils/fingerprintAnalysis";
 import {
   findCachedAnalysisByFingerprint,
   saveCachedAnalysis,
   touchCachedAnalysisAccess,
 } from "../repositories/analysisCacheRepository";
+import { saveAnalysisRun } from "../repositories/analysisRunRepository";
 
 type RunAnalyzeInput = {
   text: string;
@@ -187,19 +191,27 @@ export async function runAnalyze(
   const usedFocusAuthor =
     authorsDetected.length === 1 ? authorsDetected[0] : focusAuthor!;
 
+  const fingerprintInput = analyzableCommits.map((commit) => ({
+    sha: commit.hash,
+    author: commit.authorName,
+    authoredAt: commit.dateIso,
+    subject: commit.subject,
+  }));
+
   const fingerprint = fingerprintAnalysis({
-    commits: analyzableCommits.map((commit) => ({
-      sha: commit.hash,
-      author: commit.authorName,
-      authoredAt: commit.dateIso,
-      subject: commit.subject,
-    })),
+    commits: fingerprintInput,
     focusAuthor: usedFocusAuthor,
     source,
     pipelineVersion: "analyze-v1",
     insightsVersion: "v3",
     model: "llama3.2:3b",
     promptVersion: "v3.0",
+  });
+
+  const contentFingerprint = fingerprintAnalysisContent({
+    commits: fingerprintInput,
+    focusAuthor: usedFocusAuthor,
+    source,
   });
 
   const cached = await findCachedAnalysisByFingerprint(fingerprint);
@@ -295,6 +307,29 @@ export async function runAnalyze(
     insightsVersion: "v3",
     model: "llama3.2:3b",
     promptVersion: "v3.0",
+    response: validated.data,
+    metrics: {
+      commitCount: validated.data.data.meta.commitCount,
+      activeDays: validated.data.data.meta.activeDays,
+      signal: validated.data.data.meta.signal,
+      dateRange: validated.data.data.meta.dateRange,
+    },
+  });
+
+  await saveAnalysisRun({
+    cacheFingerprint: fingerprint,
+    contentFingerprint,
+    focusAuthor: usedFocusAuthor,
+    source,
+    pipelineVersion: "analyze-v1",
+    insightsVersion: "v3",
+    model: "llama3.2:3b",
+    promptVersion: "v3.0",
+    dateFrom: validated.data.data.meta.dateRange.from,
+    dateTo: validated.data.data.meta.dateRange.to,
+    commitCount: validated.data.data.meta.commitCount,
+    activeDays: validated.data.data.meta.activeDays,
+    signal: validated.data.data.meta.signal,
     response: validated.data,
     metrics: {
       commitCount: validated.data.data.meta.commitCount,

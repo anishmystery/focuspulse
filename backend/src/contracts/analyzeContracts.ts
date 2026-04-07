@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { literal, z } from "zod";
 
 export const AnalyzeErrorCodeSchema = z.enum([
   "INVALID_REQUEST",
@@ -106,6 +106,38 @@ export const AnalyzeErrorResponseSchema = z.object({
   error: AnalyzeErrorSchema,
 });
 
+export const AnalysisHistoryItemSchema = z.object({
+  id: z.string(),
+  focusAuthor: z.string(),
+  source: z.literal("git-log"),
+  pipelineVersion: z.string(),
+  insightsVersion: z.string(),
+  model: z.string(),
+  promptVersion: z.string().nullable(),
+  dateRange: z.object({
+    from: z.string().nullable(),
+    to: z.string().nullable(),
+  }),
+  commitCount: z.number().int().nonnegative(),
+  activeDays: z.number().int().nonnegative(),
+  signal: z.enum(["low", "medium", "high"]),
+  createdAt: z.string(),
+});
+
+export const AnalysisHistoryListResponseSchema = z.object({
+  ok: literal(true),
+  data: z.array(AnalysisHistoryItemSchema),
+});
+
+export const AnalysisHistoryDetailResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    id: z.string(),
+    createdAt: z.string(),
+    response: AnalyzeSuccessResponseSchema,
+  }),
+});
+
 export type AnalyzeErrorCode = z.infer<typeof AnalyzeErrorCodeSchema>;
 export type AnalyzeRequestBody = z.infer<typeof AnalyzeRequestBodySchema>;
 export type AnalyzeResult = z.infer<typeof AnalyzeResultSchema>;
@@ -114,3 +146,10 @@ export type AnalyzeSuccessResponse = z.infer<
 >;
 export type AnalyzeError = z.infer<typeof AnalyzeErrorSchema>;
 export type AnalyzeErrorResponse = z.infer<typeof AnalyzeErrorResponseSchema>;
+export type AnalysisHistoryItem = z.infer<typeof AnalysisHistoryItemSchema>;
+export type AnalysisHistoryListResponse = z.infer<
+  typeof AnalysisHistoryListResponseSchema
+>;
+export type AnalysisHistoryDetailResponse = z.infer<
+  typeof AnalysisHistoryDetailResponseSchema
+>;

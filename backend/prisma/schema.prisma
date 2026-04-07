@@ -28,3 +28,28 @@ model AnalysisCache {
 
   @@index([createdAt(sort: Desc)])
 }
+
+model AnalysisRun {
+  id String @id @default(uuid())
+  cacheFingerprint String
+  contentFingerprint String
+  focusAuthor String
+  source String
+  pipelineVersion String
+  insightsVersion String
+  model String
+  promptVersion String?
+  dateFrom DateTime?
+  dateTo DateTime?
+  commitCount Int
+  activeDays Int
+  signal String
+  responseJson Json
+  metricsJson Json?
+  createdAt DateTime @default(now())
+
+  @@index([focusAuthor, createdAt(sort: Desc)])
+  @@index([contentFingerprint])
+  @@index([cacheFingerprint])
+  @@index([createdAt(sort: Desc)])
+}
