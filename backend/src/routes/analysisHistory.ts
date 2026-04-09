@@ -36,23 +36,32 @@ analysisHistoryRouter.get(
 
     res.json({
       ok: true,
-      data: runs.map((run) => ({
-        id: run.id,
-        focusAuthor: run.focusAuthor,
-        source: run.source,
-        pipelineVersion: run.pipelineVersion,
-        insightsVersion: run.insightsVersion,
-        model: run.model,
-        promptVersion: run.promptVersion,
-        dateRange: {
-          from: run.dateFrom ? run.dateFrom.toISOString() : null,
-          to: run.dateTo ? run.dateTo.toISOString() : null,
-        },
-        commitCount: run.commitCount,
-        activeDays: run.activeDays,
-        signal: run.signal as "low" | "medium" | "high",
-        createdAt: run.createdAt.toISOString(),
-      })),
+      data: runs.map((run) => {
+        const result = run.response?.data;
+        return {
+          id: run.id,
+          focusAuthor: run.focusAuthor,
+          source: run.source,
+          pipelineVersion: run.pipelineVersion,
+          insightsVersion: run.insightsVersion,
+          model: run.model,
+          promptVersion: run.promptVersion,
+          dateRange: {
+            from: run.dateFrom ? run.dateFrom.toISOString() : null,
+            to: run.dateTo ? run.dateTo.toISOString() : null,
+          },
+          commitCount: run.commitCount,
+          activeDays: run.activeDays,
+          signal: run.signal as "low" | "medium" | "high",
+          createdAt: run.createdAt.toISOString(),
+
+          // NEW preview fields
+          summary: result?.summary ?? "",
+          themeCount: result?.themes?.length ?? 0,
+          hypothesisCount: result?.hypotheses?.length ?? 0,
+          recommendationsCount: result?.recommendations?.length ?? 0,
+        };
+      }),
     });
   }),
 );

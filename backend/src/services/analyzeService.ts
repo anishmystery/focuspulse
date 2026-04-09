@@ -1,4 +1,4 @@
-import { env } from "../config";
+import { ANALYSIS_VERSIONS, env } from "../config";
 import { HttpError } from "../utils/httpError";
 import { normalizeGitLogText } from "../routes/internal/normalize";
 import { generateInsightsV3FromCommits } from "../routes/internal/insightsV3";
@@ -202,10 +202,10 @@ export async function runAnalyze(
     commits: fingerprintInput,
     focusAuthor: usedFocusAuthor,
     source,
-    pipelineVersion: "analyze-v1",
-    insightsVersion: "v3",
-    model: "llama3.2:3b",
-    promptVersion: "v3.0",
+    pipelineVersion: ANALYSIS_VERSIONS.pipeline,
+    insightsVersion: ANALYSIS_VERSIONS.insights,
+    model: ANALYSIS_VERSIONS.model,
+    promptVersion: ANALYSIS_VERSIONS.prompt,
   });
 
   const contentFingerprint = fingerprintAnalysisContent({
@@ -324,10 +324,10 @@ export async function runAnalyze(
     fingerprint,
     focusAuthor: usedFocusAuthor,
     source,
-    pipelineVersion: "analyze-v1",
-    insightsVersion: "v3",
-    model: "llama3.2:3b",
-    promptVersion: "v3.0",
+    pipelineVersion: ANALYSIS_VERSIONS.pipeline,
+    insightsVersion: ANALYSIS_VERSIONS.insights,
+    model: ANALYSIS_VERSIONS.model,
+    promptVersion: ANALYSIS_VERSIONS.prompt,
     response: validated.data,
     metrics: trendMetrics,
   });
@@ -337,10 +337,10 @@ export async function runAnalyze(
     contentFingerprint,
     focusAuthor: usedFocusAuthor,
     source,
-    pipelineVersion: "analyze-v1",
-    insightsVersion: "v3",
-    model: "llama3.2:3b",
-    promptVersion: "v3.0",
+    pipelineVersion: ANALYSIS_VERSIONS.pipeline,
+    insightsVersion: ANALYSIS_VERSIONS.insights,
+    model: ANALYSIS_VERSIONS.model,
+    promptVersion: ANALYSIS_VERSIONS.prompt,
     dateFrom: validated.data.data.meta.dateRange.from,
     dateTo: validated.data.data.meta.dateRange.to,
     commitCount: validated.data.data.meta.commitCount,

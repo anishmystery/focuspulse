@@ -122,6 +122,10 @@ export const AnalysisHistoryItemSchema = z.object({
   activeDays: z.number().int().nonnegative(),
   signal: z.enum(["low", "medium", "high"]),
   createdAt: z.string(),
+  summary: z.string(),
+  themeCount: z.number().int().nonnegative(),
+  hypothesisCount: z.number().int().nonnegative(),
+  recommendationCount: z.number().int().nonnegative(),
 });
 
 export const AnalysisHistoryListResponseSchema = z.object({
@@ -166,11 +170,22 @@ export const AnalysisTrendPointScheme = z.object({
   workTypeMix: z.array(AnalysisTrendWorkTypeSchema),
 });
 
+export const TrendSeriesItemSchema = z.object({
+  time: z.string(),
+  value: z.number(),
+});
+
 export const AnalysisTrendsResponseSchema = z.object({
   ok: z.literal(true),
   data: z.object({
     focusAuthor: z.string(),
     points: z.array(AnalysisTrendPointScheme),
+    series: z.object({
+      commitCount: z.array(TrendSeriesItemSchema),
+      activeDays: z.array(TrendSeriesItemSchema),
+      lateNightPercent: z.array(TrendSeriesItemSchema),
+      weekendPercent: z.array(TrendSeriesItemSchema),
+    }),
   }),
 });
 

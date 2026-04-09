@@ -31,11 +31,31 @@ analysisTrendsRouter.get(
       limit: parsed.data.limit,
     });
 
+    const series = {
+      commitCount: points.map((p) => ({
+        time: p.timeAnchor,
+        value: p.commitCount,
+      })),
+      activeDays: points.map((p) => ({
+        time: p.timeAnchor,
+        value: p.activeDays,
+      })),
+      lateNightPercent: points.map((p) => ({
+        time: p.timeAnchor,
+        value: p.lateNightPercent,
+      })),
+      weekendPercent: points.map((p) => ({
+        time: p.timeAnchor,
+        value: p.weekendPercent,
+      })),
+    };
+
     res.json({
       ok: true,
       data: {
         focusAuthor: parsed.data.focusAuthor,
         points,
+        series,
       },
     });
   }),
