@@ -1,4 +1,4 @@
-import { literal, z } from "zod";
+import { z } from "zod";
 
 export const AnalyzeErrorCodeSchema = z.enum([
   "INVALID_REQUEST",
@@ -125,7 +125,7 @@ export const AnalysisHistoryItemSchema = z.object({
 });
 
 export const AnalysisHistoryListResponseSchema = z.object({
-  ok: literal(true),
+  ok: z.literal(true),
   data: z.array(AnalysisHistoryItemSchema),
 });
 
@@ -135,6 +135,42 @@ export const AnalysisHistoryDetailResponseSchema = z.object({
     id: z.string(),
     createdAt: z.string(),
     response: AnalyzeSuccessResponseSchema,
+  }),
+});
+
+export const AnalysisTrendWorkTypeSchema = z.object({
+  type: z.string(),
+  percent: z.number(),
+});
+
+export const AnalysisTrendPointScheme = z.object({
+  runId: z.string(),
+  focusAuthor: z.string(),
+  source: z.literal("git-log"),
+  createdAt: z.string(),
+  dateRange: z.object({
+    from: z.string().nullable(),
+    to: z.string().nullable(),
+  }),
+  timeAnchor: z.string(),
+  commitCount: z.number().int().nonnegative(),
+  activeDays: z.number().int().nonnegative(),
+  signal: z.enum(["low", "medium", "high"]),
+  weekendPercent: z.number(),
+  lateNightPercent: z.number(),
+  longestStreakDays: z.number().int().nonnegative(),
+  longestGapDays: z.number().int().nonnegative(),
+  burstiness: z.number(),
+  conventionalPercent: z.number(),
+  ticketPercent: z.number(),
+  workTypeMix: z.array(AnalysisTrendWorkTypeSchema),
+});
+
+export const AnalysisTrendsResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    focusAuthor: z.string(),
+    points: z.array(AnalysisTrendPointScheme),
   }),
 });
 
@@ -152,4 +188,8 @@ export type AnalysisHistoryListResponse = z.infer<
 >;
 export type AnalysisHistoryDetailResponse = z.infer<
   typeof AnalysisHistoryDetailResponseSchema
+>;
+export type AnalysisTrendPoint = z.infer<typeof AnalysisTrendPointScheme>;
+export type AnalysisTrendsResponse = z.infer<
+  typeof AnalysisTrendsResponseSchema
 >;

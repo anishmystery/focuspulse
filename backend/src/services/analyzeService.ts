@@ -237,6 +237,27 @@ export async function runAnalyze(
     remapInsightsError(err);
   }
 
+  const trendMetrics = {
+    commitCount: analyzableCommits.length,
+    activeDays: insights.modules.totals.activeDays,
+    signal: toSignal(insights.dataQuality),
+    dateRange: {
+      from: normalized.stats.dateRange.from ?? null,
+      to: normalized.stats.dateRange.to ?? null,
+    },
+    weekendPercent: insights.modules.rhythm.weekendPercent,
+    lateNightPercent: insights.modules.rhythm.lateNightPercent,
+    longestStreakDays: insights.modules.consistency.longestStreakDays,
+    longestGapDays: insights.modules.consistency.longestGapDays,
+    burstiness: insights.modules.consistency.burstiness,
+    conventionalPercent: insights.modules.messageQuality.conventionalPercent,
+    ticketPercent: insights.modules.messageQuality.ticketPercent,
+    workTypeMix: insights.modules.workTypeMix.map((item) => ({
+      type: item.type,
+      percent: item.percent,
+    })),
+  };
+
   const response = {
     ok: true as const,
     data: {
@@ -308,12 +329,7 @@ export async function runAnalyze(
     model: "llama3.2:3b",
     promptVersion: "v3.0",
     response: validated.data,
-    metrics: {
-      commitCount: validated.data.data.meta.commitCount,
-      activeDays: validated.data.data.meta.activeDays,
-      signal: validated.data.data.meta.signal,
-      dateRange: validated.data.data.meta.dateRange,
-    },
+    metrics: trendMetrics,
   });
 
   await saveAnalysisRun({
@@ -331,12 +347,7 @@ export async function runAnalyze(
     activeDays: validated.data.data.meta.activeDays,
     signal: validated.data.data.meta.signal,
     response: validated.data,
-    metrics: {
-      commitCount: validated.data.data.meta.commitCount,
-      activeDays: validated.data.data.meta.activeDays,
-      signal: validated.data.data.meta.signal,
-      dateRange: validated.data.data.meta.dateRange,
-    },
+    metrics: trendMetrics,
   });
 
   return attachCacheDebug(validated.data, {
