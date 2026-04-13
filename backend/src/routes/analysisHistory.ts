@@ -59,7 +59,7 @@ analysisHistoryRouter.get(
           summary: result?.summary ?? "",
           themeCount: result?.themes?.length ?? 0,
           hypothesisCount: result?.hypotheses?.length ?? 0,
-          recommendationsCount: result?.recommendations?.length ?? 0,
+          recommendationCount: result?.recommendations?.length ?? 0,
         };
       }),
     });
