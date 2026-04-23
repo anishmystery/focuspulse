@@ -3,6 +3,7 @@ import type { AnalyzeSuccessResponse } from "../types/analyze";
 import AnalyzeHelpText from "../components/analyze/AnalyzeHelpText";
 import AnalyzeErrorBanner from "../components/analyze/AnalyzeErrorBanner";
 import AnalyzeForm from "../components/analyze/AnalyzeForm";
+import AnalysisResults from "../components/results/AnalysisResults";
 
 export default function AnalyzePage() {
   const [result, setResult] = useState<AnalyzeSuccessResponse | null>(null);
@@ -28,19 +29,7 @@ export default function AnalyzePage() {
         }}
         onError={setErrorMessage}
       />
-      {result && (
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-white">Raw response</h2>
-            <p className="mt-1 text-sm text-slate-400">
-              Temporary view for verifying the end-to-end frontend/backend flow.
-            </p>
-          </div>
-          <pre className="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-200">
-            <code>{JSON.stringify(result, null, 2)}</code>
-          </pre>
-        </section>
-      )}
+      {result && <AnalysisResults result={result.data} />}
     </div>
   );
 }
